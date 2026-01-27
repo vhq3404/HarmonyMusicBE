@@ -4,6 +4,7 @@ const cors = require("cors");
 
 const connectDB = require("./config/db");
 const songRoutes = require("./routes/song.route");
+const playRoutes = require("./routes/play.route");
 
 const app = express();
 
@@ -16,7 +17,7 @@ app.use(express.json());
 
 // ====== ROUTES ======
 app.use("/api/songs", songRoutes);
-//app.use("/api/plays", require("./routes/play.routes"));
+app.use("/api/plays", playRoutes); 
 //app.use("/api/likes", require("./routes/like.routes"));
 
 // ====== START SERVER ======
