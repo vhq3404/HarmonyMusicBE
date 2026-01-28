@@ -5,9 +5,7 @@ const { getUserById } = require("../utils/authClient");
 
 exports.createSong = async (req, res) => {
   try {
-    const { title, artists, publicDate } = req.body;
-    const { userId } = req.body;
-
+    const { userId, title, artists, publicDate, lyrics } = req.body;
     const audioFile = req.files.audio[0];
     const imageFile = req.files.thumbnail[0];
     const { parseFile } = await import("music-metadata");
@@ -34,6 +32,7 @@ exports.createSong = async (req, res) => {
       audioUrl: audioUpload.secure_url,
       thumbnailUrl: imageUpload.secure_url,
       artists: artists ? artists.split(",") : [],
+      lyrics,
       publicDate,
     });
 
@@ -90,6 +89,145 @@ exports.getSongs = async (req, res) => {
         totalPages: Math.ceil(total / limit),
       },
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== GET SONGS BY USER ===================== */
+exports.getSongsByUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    const songs = await Song.find({ userId })
+      .sort({ createdAt: -1 })
+      .select("-__v");
+
+    res.json(songs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== GET SONG BY ID ===================== */
+exports.getSongById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const song = await Song.findById(id).select("-__v");
+    if (!song) {
+      return res.status(404).json({ message: "Song not found" });
+    }
+
+    res.json(song);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== UPDATE SONG ===================== */
+exports.updateSong = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, artists, album, tags, lyrics, publicDate } = req.body;
+
+    const song = await Song.findById(id);
+    if (!song) {
+      return res.status(404).json({ message: "Song not found" });
+    }
+
+    /* ===== UPDATE TEXT FIELDS ===== */
+    if (title !== undefined) song.title = title;
+    if (artists !== undefined)
+      song.artists = artists ? artists.split(",") : [];
+    if (album !== undefined) song.album = album;
+    if (tags !== undefined) song.tags = tags ? tags.split(",") : [];
+    if (lyrics !== undefined) song.lyrics = lyrics;
+    if (publicDate !== undefined) song.publicDate = publicDate;
+
+    /* ===== UPDATE AUDIO ===== */
+    if (req.files?.audio?.[0]) {
+      const audioFile = req.files.audio[0];
+      const { parseFile } = await import("music-metadata");
+
+      // parse duration
+      const metadata = await parseFile(audioFile.path);
+      song.duration = Math.floor(metadata.format.duration);
+
+      // xoá audio cũ
+      if (song.audioUrl) {
+        const publicId = song.audioUrl.split("/").pop().split(".")[0];
+        await cloudinary.uploader.destroy(publicId, {
+          resource_type: "video",
+        });
+      }
+
+      // upload audio mới
+      const audioUpload = await cloudinary.uploader.upload(audioFile.path, {
+        resource_type: "video",
+      });
+
+      song.audioUrl = audioUpload.secure_url;
+
+      fs.unlinkSync(audioFile.path);
+    }
+
+    /* ===== UPDATE THUMBNAIL ===== */
+    if (req.files?.thumbnail?.[0]) {
+      const imageFile = req.files.thumbnail[0];
+
+      // xoá ảnh cũ
+      if (song.thumbnailUrl) {
+        const publicId = song.thumbnailUrl.split("/").pop().split(".")[0];
+        await cloudinary.uploader.destroy(publicId);
+      }
+
+      // upload ảnh mới
+      const imageUpload = await cloudinary.uploader.upload(imageFile.path);
+      song.thumbnailUrl = imageUpload.secure_url;
+
+      fs.unlinkSync(imageFile.path);
+    }
+
+    await song.save();
+
+    res.json(song);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== DELETE SONG ===================== */
+exports.deleteSong = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const song = await Song.findById(id);
+    if (!song) {
+      return res.status(404).json({ message: "Song not found" });
+    }
+
+    /* ===== DELETE AUDIO ===== */
+    if (song.audioUrl) {
+      const audioPublicId = song.audioUrl.split("/").pop().split(".")[0];
+      await cloudinary.uploader.destroy(audioPublicId, {
+        resource_type: "video",
+      });
+    }
+
+    /* ===== DELETE THUMBNAIL ===== */
+    if (song.thumbnailUrl) {
+      const imagePublicId = song.thumbnailUrl.split("/").pop().split(".")[0];
+      await cloudinary.uploader.destroy(imagePublicId);
+    }
+
+    await song.deleteOne();
+
+    res.json({ message: "Song deleted successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -20,7 +20,7 @@ const SongSchema = new mongoose.Schema(
     ],
 
     duration: {
-      type: Number, // seconds
+      type: Number,
       required: true,
     },
 
@@ -35,6 +35,11 @@ const SongSchema = new mongoose.Schema(
     },
 
     artists: [String],
+
+    lyrics: {
+      type: String,
+      default: "",
+    },
 
     publicDate: {
       type: Date,
@@ -57,7 +62,7 @@ const SongSchema = new mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("Song", SongSchema);
