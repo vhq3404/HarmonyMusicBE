@@ -1,26 +1,18 @@
+// models/Like.js
 const mongoose = require("mongoose");
 
-const LikeSchema = new mongoose.Schema(
+const likeSchema = new mongoose.Schema(
   {
-    userId: {
+    userId: { type: String, required: true },
+    songId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Song",
       required: true,
-    },
-
-    targetType: {
-      type: String,
-      enum: ["song", "post"],
-      required: true,
-    },
-
-    targetId: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true,
-      refPath: "targetType",
     },
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Like", LikeSchema);
+likeSchema.index({ userId: 1, songId: 1 }, { unique: true });
+
+module.exports = mongoose.model("Like", likeSchema);

@@ -1,4 +1,5 @@
 const Song = require("../models/Song");
+const Like = require("../models/Like");
 const cloudinary = require("../config/cloudinary");
 const fs = require("fs");
 const { getUserById } = require("../utils/authClient");
@@ -67,18 +68,25 @@ exports.getSongs = async (req, res) => {
       userIds.map(async (userId) => {
         try {
           const user = await getUserById(userId);
-          userMap[userId] = user.username;
+          userMap[userId] = {
+            username: user.username,
+            avatar: user.avatar_url || null,
+          };
         } catch (err) {
           userMap[userId] = "Unknown artist";
         }
       }),
     );
 
-    // 👉 gắn username vào từng bài hát
-    const songsWithUser = songs.map((song) => ({
-      ...song.toObject(),
-      username: userMap[song.userId] || "Unknown artist",
-    }));
+    const songsWithUser = songs.map((song) => {
+      const user = userMap[song.userId];
+
+      return {
+        ...song.toObject(),
+        username: user?.username || "Unknown artist",
+        userAvatar: user?.avatar || null,
+      };
+    });
 
     res.json({
       data: songsWithUser,
@@ -103,12 +111,41 @@ exports.getSongsByUser = async (req, res) => {
       return res.status(400).json({ message: "userId is required" });
     }
 
+    // 1️⃣ Lấy danh sách bài hát
     const songs = await Song.find({ userId })
       .sort({ createdAt: -1 })
       .select("-__v");
 
-    res.json(songs);
+    if (!songs.length) {
+      return res.json({ data: [] });
+    }
+
+    // 2️⃣ Lấy thông tin user (chỉ 1 lần)
+    let username = "Unknown artist";
+    let userAvatar = null;
+
+    try {
+      const user = await getUserById(userId);
+      if (user) {
+        username = user.username || username;
+        userAvatar = user.avatar_url || null;
+      }
+    } catch (err) {
+      // fallback giữ mặc định
+    }
+
+    // 3️⃣ Gắn user info vào từng bài hát
+    const songsWithUser = songs.map((song) => ({
+      ...song.toObject(),
+      username,
+      userAvatar,
+    }));
+
+    res.json({
+      data: songsWithUser,
+    });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -123,7 +160,24 @@ exports.getSongById = async (req, res) => {
       return res.status(404).json({ message: "Song not found" });
     }
 
-    res.json(song);
+    let username = "Unknown artist";
+    let userAvatar = null;
+
+    try {
+      const user = await getUserById(song.userId);
+      if (user) {
+        username = user.username || username;
+        userAvatar = user.avatar_url || null;
+      }
+    } catch (err) {
+      // fallback giữ nguyên
+    }
+
+    res.json({
+      ...song.toObject(),
+      username,
+      userAvatar,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -142,8 +196,7 @@ exports.updateSong = async (req, res) => {
 
     /* ===== UPDATE TEXT FIELDS ===== */
     if (title !== undefined) song.title = title;
-    if (artists !== undefined)
-      song.artists = artists ? artists.split(",") : [];
+    if (artists !== undefined) song.artists = artists ? artists.split(",") : [];
     if (album !== undefined) song.album = album;
     if (tags !== undefined) song.tags = tags ? tags.split(",") : [];
     if (lyrics !== undefined) song.lyrics = lyrics;
@@ -228,6 +281,186 @@ exports.deleteSong = async (req, res) => {
     await song.deleteOne();
 
     res.json({ message: "Song deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== SEARCH SONGS ===================== */
+exports.searchSongs = async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || !q.trim()) {
+      return res.json({ data: [] });
+    }
+
+    const keyword = q.trim();
+
+    // 1️⃣ tìm bài hát
+    const songs = await Song.find({
+      isPublic: true,
+      $or: [
+        { title: { $regex: keyword, $options: "i" } },
+        { artists: { $regex: keyword, $options: "i" } },
+        { album: { $regex: keyword, $options: "i" } },
+        { tags: { $regex: keyword, $options: "i" } },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .select("-__v");
+
+    if (!songs.length) {
+      return res.json({ data: [] });
+    }
+
+    // 2️⃣ lấy user info (tránh gọi trùng)
+    const userIds = [...new Set(songs.map((s) => s.userId))];
+    const userMap = {};
+
+    await Promise.all(
+      userIds.map(async (userId) => {
+        try {
+          const user = await getUserById(userId);
+          userMap[userId] = {
+            username: user.username,
+            avatar: user.avatar_url || null,
+          };
+        } catch {
+          userMap[userId] = {
+            username: "Unknown artist",
+            avatar: null,
+          };
+        }
+      }),
+    );
+
+    // 3️⃣ gắn user vào song
+    const result = songs.map((song) => {
+      const user = userMap[song.userId];
+      return {
+        ...song.toObject(),
+        username: user.username,
+        userAvatar: user.avatar,
+      };
+    });
+
+    res.json({ data: result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.likeSong = async (req, res) => {
+  try {
+    const { id: songId } = req.params;
+    const { userId } = req.body;
+
+    await Like.create({ userId, songId });
+
+    res.json({ liked: true });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.json({ liked: true }); 
+    }
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.unlikeSong = async (req, res) => {
+  try {
+    const { id: songId } = req.params;
+    const { userId } = req.body;
+
+    await Like.findOneAndDelete({ userId, songId });
+
+    res.json({ liked: false });
+  } catch (err) { 
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.isSongLiked = async (req, res) => {
+  const { id: songId } = req.params;
+  const { userId } = req.query;
+
+  const liked = await Like.exists({ userId, songId });
+  res.json({ liked: !!liked });
+};
+
+exports.getSongLikes = async (req, res) => {
+  const { id: songId } = req.params;
+
+  const count = await Like.countDocuments({ songId });
+  res.json({ likes: count });
+};
+
+exports.getLikedSongs = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // 1️⃣ lấy danh sách like
+    const likes = await Like.find({ userId }).sort({ createdAt: -1 });
+
+    if (!likes.length) {
+      return res.json({ data: [] });
+    }
+
+    const songIds = likes.map((l) => l.songId);
+
+    // 2️⃣ lấy bài hát
+    const songs = await Song.find({ _id: { $in: songIds } }).select("-__v");
+
+    // giữ thứ tự theo thời gian like
+    const songMap = {};
+    songs.forEach((s) => (songMap[s._id.toString()] = s));
+
+    const orderedSongs = songIds
+      .map((id) => songMap[id.toString()])
+      .filter(Boolean);
+
+    // 3️⃣ gắn username
+    const userIds = [...new Set(orderedSongs.map((s) => s.userId))];
+    const userMap = {};
+
+    await Promise.all(
+      userIds.map(async (uid) => {
+        try {
+          const user = await getUserById(uid);
+          userMap[uid] = {
+            username: user.username,
+            avatar: user.avatar_url || null,
+          };
+        } catch {
+          userMap[uid] = {
+            username: "Unknown artist",
+            avatar: null,
+          };
+        }
+      })
+    );
+
+    const result = orderedSongs.map((song) => ({
+      ...song.toObject(),
+      username: userMap[song.userId]?.username,
+      userAvatar: userMap[song.userId]?.avatar,
+    }));
+
+    res.json({ data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getSongLikeCount = async (req, res) => {
+  try {
+    const { id: songId } = req.params;
+
+    const count = await Like.countDocuments({ songId });
+
+    res.json({ likes: count });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
