@@ -102,25 +102,145 @@ exports.getSongs = async (req, res) => {
   }
 };
 
-/* ===================== GET SONGS BY USER ===================== */
-exports.getSongsByUser = async (req, res) => {
+/* ===================== TOP LISTENED SONGS ===================== */
+exports.getTopSongs = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const limit = Number(req.query.limit) || 10;
 
-    if (!userId) {
-      return res.status(400).json({ message: "userId is required" });
-    }
-
-    // 1️⃣ Lấy danh sách bài hát
-    const songs = await Song.find({ userId })
-      .sort({ createdAt: -1 })
+    const songs = await Song.find({ isPublic: true })
+      .sort({ playCount: -1 })
+      .limit(limit)
       .select("-__v");
 
     if (!songs.length) {
       return res.json({ data: [] });
     }
 
-    // 2️⃣ Lấy thông tin user (chỉ 1 lần)
+    /* ===== attach user info ===== */
+    const userIds = [...new Set(songs.map((s) => s.userId))];
+    const userMap = {};
+
+    await Promise.all(
+      userIds.map(async (uid) => {
+        try {
+          const user = await getUserById(uid);
+          userMap[uid] = {
+            username: user.username,
+            avatar: user.avatar_url || null,
+          };
+        } catch {
+          userMap[uid] = {
+            username: "Unknown artist",
+            avatar: null,
+          };
+        }
+      }),
+    );
+
+    const result = songs.map((song) => ({
+      ...song.toObject(),
+      username: userMap[song.userId]?.username,
+      userAvatar: userMap[song.userId]?.avatar,
+    }));
+
+    res.json({ data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== RECOMMENDED SONGS ===================== */
+exports.getRecommendedSongs = async (req, res) => {
+  try {
+    const { userId } = req.query;
+    const limit = Number(req.query.limit) || 10;
+
+    let recommendedSongs = [];
+
+    if (userId) {
+      const likes = await Like.find({ userId }).limit(20);
+      const likedSongIds = likes.map((l) => l.songId);
+
+      if (likedSongIds.length) {
+        const likedSongs = await Song.find({ _id: { $in: likedSongIds } });
+
+        const tags = [...new Set(likedSongs.flatMap((s) => s.tags || []))];
+        const artists = [
+          ...new Set(likedSongs.flatMap((s) => s.artists || [])),
+        ];
+
+        recommendedSongs = await Song.find({
+          isPublic: true,
+          _id: { $nin: likedSongIds },
+          $or: [{ tags: { $in: tags } }, { artists: { $in: artists } }],
+        })
+          .sort({ playCount: -1 })
+          .limit(limit);
+      }
+    }
+
+    /* fallback random */
+    if (!recommendedSongs.length) {
+      recommendedSongs = await Song.aggregate([
+        { $match: { isPublic: true } },
+        { $sample: { size: limit } },
+      ]);
+    }
+
+    const userIds = [...new Set(recommendedSongs.map((s) => s.userId))];
+    const userMap = {};
+
+    await Promise.all(
+      userIds.map(async (uid) => {
+        try {
+          const user = await getUserById(uid);
+          userMap[uid] = {
+            username: user.username,
+            avatar: user.avatar_url || null,
+          };
+        } catch {
+          userMap[uid] = {
+            username: "Unknown artist",
+            avatar: null,
+          };
+        }
+      }),
+    );
+
+    const result = recommendedSongs.map((song) => ({
+      ...(song.toObject ? song.toObject() : song),
+      username: userMap[song.userId]?.username,
+      userAvatar: userMap[song.userId]?.avatar,
+    }));
+
+    res.json({ data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== GET SONGS BY USER ===================== */
+exports.getSongsByUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { sort } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    let sortOption = { createdAt: -1 }; // default
+
+    if (sort === "play") {
+      sortOption = { playCount: -1 };
+    }
+
+    const songs = await Song.find({ userId }).sort(sortOption).select("-__v");
+
+    if (!songs.length) {
+      return res.json({ data: [] });
+    }
+
     let username = "Unknown artist";
     let userAvatar = null;
 
@@ -130,22 +250,16 @@ exports.getSongsByUser = async (req, res) => {
         username = user.username || username;
         userAvatar = user.avatar_url || null;
       }
-    } catch (err) {
-      // fallback giữ mặc định
-    }
+    } catch {}
 
-    // 3️⃣ Gắn user info vào từng bài hát
     const songsWithUser = songs.map((song) => ({
       ...song.toObject(),
       username,
       userAvatar,
     }));
 
-    res.json({
-      data: songsWithUser,
-    });
+    res.json({ data: songsWithUser });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -297,7 +411,7 @@ exports.searchSongs = async (req, res) => {
 
     const keyword = q.trim();
 
-    // 1️⃣ tìm bài hát
+    // 1️⃣ tìm bài hát (KHÔNG PHÂN BIỆT DẤU)
     const songs = await Song.find({
       isPublic: true,
       $or: [
@@ -307,6 +421,10 @@ exports.searchSongs = async (req, res) => {
         { tags: { $regex: keyword, $options: "i" } },
       ],
     })
+      .collation({
+        locale: "vi",
+        strength: 1, // 🔥 bỏ dấu + không phân biệt hoa thường
+      })
       .sort({ createdAt: -1 })
       .limit(20)
       .select("-__v");
@@ -341,8 +459,8 @@ exports.searchSongs = async (req, res) => {
       const user = userMap[song.userId];
       return {
         ...song.toObject(),
-        username: user.username,
-        userAvatar: user.avatar,
+        username: user?.username,
+        userAvatar: user?.avatar,
       };
     });
 
@@ -363,7 +481,7 @@ exports.likeSong = async (req, res) => {
     res.json({ liked: true });
   } catch (err) {
     if (err.code === 11000) {
-      return res.json({ liked: true }); 
+      return res.json({ liked: true });
     }
     res.status(500).json({ error: err.message });
   }
@@ -377,7 +495,7 @@ exports.unlikeSong = async (req, res) => {
     await Like.findOneAndDelete({ userId, songId });
 
     res.json({ liked: false });
-  } catch (err) { 
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
@@ -439,7 +557,7 @@ exports.getLikedSongs = async (req, res) => {
             avatar: null,
           };
         }
-      })
+      }),
     );
 
     const result = orderedSongs.map((song) => ({

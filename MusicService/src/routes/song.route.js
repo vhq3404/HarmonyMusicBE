@@ -5,6 +5,8 @@ const {
   createSong,
   searchSongs,
   getSongs,
+  getTopSongs,
+  getRecommendedSongs,
   getSongsByUser,
   getSongById,
   getSongLikeCount,
@@ -19,11 +21,16 @@ const {
 
 /* ===================== GET ===================== */
 router.get("/search", searchSongs);
+router.get("/top", getTopSongs);
+router.get("/recommend", getRecommendedSongs);
+
 router.get("/users/:userId/liked-songs", getLikedSongs);
+router.get("/user/:userId", getSongsByUser);
+
 router.get("/:id/likes", getSongLikeCount);
 router.get("/:id/liked", isSongLiked);
+
 router.get("/", getSongs);
-router.get("/user/:userId", getSongsByUser);
 router.get("/:id", getSongById);
 
 /* ===================== POST ===================== */
