@@ -51,6 +51,13 @@ const SongSchema = new mongoose.Schema(
       default: true,
     },
 
+    status: {
+      type: String,
+      enum: ["active", "hidden", "blocked"],
+      default: "active",
+      index: true,
+    },
+
     playCount: {
       type: Number,
       default: 0,
@@ -62,7 +69,7 @@ const SongSchema = new mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true },
+  { timestamps: true }
 );
 
 module.exports = mongoose.model("Song", SongSchema);

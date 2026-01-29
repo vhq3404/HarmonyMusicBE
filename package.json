@@ -5,7 +5,8 @@
   "scripts": {
     "auth": "cd AuthService && npm run dev",
     "music": "cd MusicService && npm run dev",
-    "dev": "concurrently \"npm run auth\" \"npm run music\""
+    "report": "cd ReportService && npm run dev",
+    "dev": "concurrently \"npm run auth\" \"npm run music\" \"npm run report\""
   },
   "keywords": [],
   "author": "",
