@@ -1,28 +1,22 @@
-// controllers/comment.controller.js
-const Comment = require("../models/Comment");
-const Song = require("../models/Song");
+const prisma = require("../config/db");
 const { getUserById } = require("../utils/authClient");
+const { toCommentResponse } = require("../utils/transform");
 
 /* ===================== GET COMMENTS BY SONG ===================== */
 exports.getCommentsBySong = async (req, res) => {
   try {
     const { id: songId } = req.params;
 
-    // check song tồn tại
-    const song = await Song.findById(songId).select("_id");
-    if (!song) {
-      return res.status(404).json({ message: "Song not found" });
-    }
+    const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
+    if (!song) return res.status(404).json({ message: "Song not found" });
 
-    const comments = await Comment.find({ songId })
-      .sort({ createdAt: -1 })
-      .select("-__v");
+    const comments = await prisma.comment.findMany({
+      where: { songId },
+      orderBy: { createdAt: "desc" },
+    });
 
-    if (!comments.length) {
-      return res.json({ data: [] });
-    }
+    if (!comments.length) return res.json({ data: [] });
 
-    /* ===== LẤY USER INFO (tránh gọi trùng) ===== */
     const userIds = [...new Set(comments.map((c) => c.userId))];
     const userMap = {};
 
@@ -30,21 +24,15 @@ exports.getCommentsBySong = async (req, res) => {
       userIds.map(async (uid) => {
         try {
           const user = await getUserById(uid);
-          userMap[uid] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
+          userMap[uid] = { username: user.username, avatar: user.avatar_url || null };
         } catch {
-          userMap[uid] = {
-            username: "Unknown user",
-            avatar: null,
-          };
+          userMap[uid] = { username: "Unknown user", avatar: null };
         }
-      })
+      }),
     );
 
     const result = comments.map((c) => ({
-      ...c.toObject(),
+      ...toCommentResponse(c),
       username: userMap[c.userId]?.username,
       userAvatar: userMap[c.userId]?.avatar,
     }));
@@ -65,19 +53,13 @@ exports.createComment = async (req, res) => {
       return res.status(400).json({ message: "Content is required" });
     }
 
-    // check song tồn tại
-    const song = await Song.findById(songId).select("_id");
-    if (!song) {
-      return res.status(404).json({ message: "Song not found" });
-    }
+    const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
+    if (!song) return res.status(404).json({ message: "Song not found" });
 
-    const comment = await Comment.create({
-      songId,
-      userId,
-      content: content.trim(),
+    const comment = await prisma.comment.create({
+      data: { songId, userId, content: content.trim() },
     });
 
-    /* ===== GẮN USER INFO CHO RESPONSE ===== */
     let username = "Unknown user";
     let userAvatar = null;
 
@@ -89,11 +71,7 @@ exports.createComment = async (req, res) => {
       }
     } catch {}
 
-    res.json({
-      ...comment.toObject(),
-      username,
-      userAvatar,
-    });
+    res.json({ ...toCommentResponse(comment), username, userAvatar });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -105,17 +83,14 @@ exports.deleteComment = async (req, res) => {
     const { id } = req.params;
     const { userId } = req.query;
 
-    const comment = await Comment.findById(id);
-    if (!comment) {
-      return res.status(404).json({ message: "Comment not found" });
-    }
+    const comment = await prisma.comment.findUnique({ where: { id } });
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
 
-    // chỉ cho owner xoá
     if (comment.userId !== userId) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    await comment.deleteOne();
+    await prisma.comment.delete({ where: { id } });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -126,8 +101,7 @@ exports.deleteComment = async (req, res) => {
 exports.getCommentCount = async (req, res) => {
   try {
     const { id: songId } = req.params;
-
-    const count = await Comment.countDocuments({ songId });
+    const count = await prisma.comment.count({ where: { songId } });
     res.json({ count });
   } catch (err) {
     res.status(500).json({ error: err.message });

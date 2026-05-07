@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Song {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id")
+  title        String
+  duration     Int      @default(0)
+  audioUrl     String   @map("audio_url")
+  thumbnailUrl String   @map("thumbnail_url")
+  artists      String[]
+  lyrics       String   @default("")
+  publicDate   DateTime @map("public_date")
+  isPublic     Boolean  @default(true) @map("is_public")
+  status       String   @default("active")
+  playCount    Int      @default(0) @map("play_count")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  plays         Play[]
+  likes         Like[]
+  comments      Comment[]
+  playlistSongs PlaylistSong[]
+
+  @@map("songs")
+}
+
+model Play {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id")
+  songId      String   @db.Uuid @map("song_id")
+  completedAt DateTime @map("completed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@map("plays")
+}
+
+model Playlist {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id")
+  name       String
+  isPublic   Boolean  @default(true) @map("is_public")
+  isFavorite Boolean  @default(false) @map("is_favorite")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  playlistSongs PlaylistSong[]
+
+  @@index([userId])
+  @@map("playlists")
+}
+
+model PlaylistSong {
+  id         Int    @id @default(autoincrement())
+  playlistId String @db.Uuid @map("playlist_id")
+  songId     String @db.Uuid @map("song_id")
+  position   Int    @default(0)
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, songId])
+  @@map("playlist_songs")
+}
+
+model Like {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id")
+  songId    String   @db.Uuid @map("song_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, songId])
+  @@map("likes")
+}
+
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  songId    String   @db.Uuid @map("song_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([songId])
+  @@map("comments")
+}

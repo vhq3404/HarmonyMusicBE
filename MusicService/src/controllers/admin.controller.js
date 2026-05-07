@@ -1,14 +1,13 @@
-const Song = require("../models/Song");
+const prisma = require("../config/db");
 const axios = require("axios");
 const { getUserById } = require("../utils/authClient");
+const { toSongResponse } = require("../utils/transform");
 
 /* ================= ADMIN GET SONGS ================= */
 exports.getAdminSongs = async (req, res) => {
   try {
-    // 1️⃣ lấy toàn bộ bài hát
-    const songs = await Song.find().sort({ createdAt: -1 }).lean();
+    const songs = await prisma.song.findMany({ orderBy: { createdAt: "desc" } });
 
-    // 2️⃣ gọi ReportService để lấy report stats
     const reportRes = await axios.get(
       "http://localhost:4003/api/admin/reports/songs/stats",
     );
@@ -18,42 +17,30 @@ exports.getAdminSongs = async (req, res) => {
       reportMap[r.song_id] = r.report_count;
     });
 
-    // 3️⃣ lấy danh sách userId
     const userIds = [...new Set(songs.map((s) => s.userId))];
-
-    // 4️⃣ map userId -> user info
     const userMap = {};
 
     await Promise.all(
       userIds.map(async (uid) => {
         try {
           const user = await getUserById(uid);
-          userMap[uid] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
+          userMap[uid] = { username: user.username, avatar: user.avatar_url || null };
         } catch {
-          userMap[uid] = {
-            username: "Unknown",
-            avatar: null,
-          };
+          userMap[uid] = { username: "Unknown", avatar: null };
         }
       }),
     );
 
-    // 5️⃣ merge toàn bộ data
     const data = songs.map((song) => {
       const user = userMap[song.userId] || {};
-
       return {
-        ...song,
+        ...toSongResponse(song),
         username: user.username,
         userAvatar: user.avatar,
-        reportCount: reportMap[song._id.toString()] || 0,
+        reportCount: reportMap[song.id] || 0,
       };
     });
 
-    // 6️⃣ sort theo reportCount DESC
     data.sort((a, b) => b.reportCount - a.reportCount);
 
     res.json({ data });
@@ -63,25 +50,30 @@ exports.getAdminSongs = async (req, res) => {
   }
 };
 
+/* ================= ADMIN UPDATE SONG STATUS ================= */
 exports.updateSongStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
-  const song = await Song.findByIdAndUpdate(
-    id,
-    { status },
-    { new: true },
-  );
+  try {
+    const song = await prisma.song.update({
+      where: { id },
+      data: { status },
+    });
 
-  if (status === "hidden" || status === "blocked") {
-    try {
-      await axios.patch(
-        `http://localhost:4003/api/reports/admin/songs/${id}/resolve`,
-      );
-    } catch (err) {
-      console.error("Resolve report failed:", err.message);
+    if (status === "hidden" || status === "blocked") {
+      try {
+        await axios.patch(
+          `http://localhost:4003/api/admin/reports/songs/${id}/resolve`,
+        );
+      } catch (err) {
+        console.error("Resolve report failed:", err.message);
+      }
     }
-  }
 
-  res.json({ success: true, song });
+    res.json({ success: true, song: toSongResponse(song) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 };

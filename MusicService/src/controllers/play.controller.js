@@ -1,6 +1,4 @@
-const mongoose = require("mongoose");
-const Play = require("../models/Play");
-const Song = require("../models/Song");
+const prisma = require("../config/db");
 
 exports.createPlay = async (req, res) => {
   try {
@@ -10,19 +8,21 @@ exports.createPlay = async (req, res) => {
       return res.status(400).json({ error: "Missing data" });
     }
 
-    // ✅ chỉ cần nghe 5 giây
     if (listenedSeconds < 5) {
       return res.json({ message: "Play not counted" });
     }
 
-    await Play.create({
-      userId,
-      songId,
-      completedAt: new Date(),
+    await prisma.play.create({
+      data: {
+        userId,
+        songId,
+        completedAt: new Date(),
+      },
     });
 
-    await Song.findByIdAndUpdate(songId, {
-      $inc: { playCount: 1 },
+    await prisma.song.update({
+      where: { id: songId },
+      data: { playCount: { increment: 1 } },
     });
 
     res.json({ message: "Play counted" });

@@ -1,7 +1,6 @@
-const mongoose = require("mongoose");
-const Playlist = require("../models/Playlist");
-const Song = require("../models/Song");
+const prisma = require("../config/db");
 const { getUserById } = require("../utils/authClient");
+const { toSongResponse, toPlaylistResponse } = require("../utils/transform");
 
 /* ================= CREATE PLAYLIST ================= */
 exports.createPlaylist = async (req, res) => {
@@ -12,14 +11,15 @@ exports.createPlaylist = async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    const playlist = await Playlist.create({
-      userId,
-      name,
-      isPublic: !!isPublic,
-      songIds: [],
+    const playlist = await prisma.playlist.create({
+      data: {
+        userId,
+        name,
+        isPublic: !!isPublic,
+      },
     });
 
-    res.json({ playlist });
+    res.json({ playlist: toPlaylistResponse(playlist, []) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -30,11 +30,20 @@ exports.getPlaylistsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const playlists = await Playlist.find({ userId }).sort({
-      createdAt: -1,
+    const playlists = await prisma.playlist.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        playlistSongs: { orderBy: { position: "asc" } },
+      },
     });
 
-    res.json({ data: playlists });
+    const data = playlists.map((p) => {
+      const songIds = p.playlistSongs.map((ps) => ps.songId);
+      return toPlaylistResponse(p, songIds);
+    });
+
+    res.json({ data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -45,56 +54,47 @@ exports.getPlaylistById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const playlist = await Playlist.findById(id);
-    if (!playlist) {
-      return res.status(404).json({ message: "Playlist not found" });
-    }
+    const playlist = await prisma.playlist.findUnique({
+      where: { id },
+      include: {
+        playlistSongs: { orderBy: { position: "asc" } },
+      },
+    });
 
-    // 🔥 giữ đúng thứ tự bài hát trong playlist
-    const songs = await Song.find({
-      _id: { $in: playlist.songIds },
-    }).select("-__v");
+    if (!playlist) return res.status(404).json({ message: "Playlist not found" });
 
-    // map songId -> song
+    const orderedSongIds = playlist.playlistSongs.map((ps) => ps.songId);
+
+    const songs = await prisma.song.findMany({
+      where: { id: { in: orderedSongIds } },
+    });
+
     const songMap = {};
-    songs.forEach((s) => (songMap[s._id.toString()] = s));
+    songs.forEach((s) => (songMap[s.id] = s));
+    const orderedSongs = orderedSongIds.map((id) => songMap[id]).filter(Boolean);
 
-    const orderedSongs = playlist.songIds
-      .map((id) => songMap[id.toString()])
-      .filter(Boolean);
-
-    // ===== GẮN USER INFO =====
     const userIds = [...new Set(orderedSongs.map((s) => s.userId))];
     const userMap = {};
 
     await Promise.all(
-      userIds.map(async (userId) => {
+      userIds.map(async (uid) => {
         try {
-          const user = await getUserById(userId);
-          userMap[userId] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
+          const user = await getUserById(uid);
+          userMap[uid] = { username: user.username, avatar: user.avatar_url || null };
         } catch {
-          userMap[userId] = {
-            username: "Unknown artist",
-            avatar: null,
-          };
+          userMap[uid] = { username: "Unknown artist", avatar: null };
         }
       }),
     );
 
-    const songsWithUser = orderedSongs.map((song) => {
-      const user = userMap[song.userId];
-      return {
-        ...song.toObject(),
-        username: user.username,
-        userAvatar: user.avatar,
-      };
-    });
+    const songsWithUser = orderedSongs.map((song) => ({
+      ...toSongResponse(song),
+      username: userMap[song.userId]?.username,
+      userAvatar: userMap[song.userId]?.avatar,
+    }));
 
     res.json({
-      playlist,
+      playlist: toPlaylistResponse(playlist, orderedSongIds),
       songs: songsWithUser,
     });
   } catch (err) {
@@ -108,20 +108,20 @@ exports.addSongToPlaylist = async (req, res) => {
     const { id } = req.params;
     const { songId } = req.body;
 
-    if (!mongoose.Types.ObjectId.isValid(songId)) {
-      return res.status(400).json({ message: "Invalid songId" });
-    }
+    const playlist = await prisma.playlist.findUnique({
+      where: { id },
+      include: { playlistSongs: { orderBy: { position: "asc" } } },
+    });
 
-    const playlist = await Playlist.findById(id);
-    if (!playlist) {
-      return res.status(404).json({ message: "Playlist not found" });
-    }
+    if (!playlist) return res.status(404).json({ message: "Playlist not found" });
 
-    const exists = playlist.songIds.some((sid) => sid.toString() === songId);
+    const exists = playlist.playlistSongs.some((ps) => ps.songId === songId);
 
     if (!exists) {
-      playlist.songIds.push(songId);
-      await playlist.save();
+      const nextPosition = playlist.playlistSongs.length;
+      await prisma.playlistSong.create({
+        data: { playlistId: id, songId, position: nextPosition },
+      });
     }
 
     res.json({ message: "Added to playlist" });
@@ -135,8 +135,7 @@ exports.deletePlaylist = async (req, res) => {
   try {
     const { id } = req.params;
 
-    await Playlist.findByIdAndDelete(id);
-
+    await prisma.playlist.delete({ where: { id } });
     res.json({ message: "Playlist deleted" });
   } catch (err) {
     res.status(500).json({ error: err.message });

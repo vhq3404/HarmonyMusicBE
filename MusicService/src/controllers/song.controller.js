@@ -1,9 +1,35 @@
-const Song = require("../models/Song");
-const Like = require("../models/Like");
+const prisma = require("../config/db");
 const cloudinary = require("../config/cloudinary");
 const fs = require("fs");
 const { getUserById } = require("../utils/authClient");
+const { toSongResponse } = require("../utils/transform");
+const removeVietnameseTones = require("../utils/removeVietnameseTones");
 
+async function attachUserInfo(songs) {
+  if (!songs.length) return [];
+
+  const userIds = [...new Set(songs.map((s) => s.userId))];
+  const userMap = {};
+
+  await Promise.all(
+    userIds.map(async (uid) => {
+      try {
+        const user = await getUserById(uid);
+        userMap[uid] = { username: user.username, avatar: user.avatar_url || null };
+      } catch {
+        userMap[uid] = { username: "Unknown artist", avatar: null };
+      }
+    }),
+  );
+
+  return songs.map((song) => ({
+    ...toSongResponse(song),
+    username: userMap[song.userId]?.username,
+    userAvatar: userMap[song.userId]?.avatar,
+  }));
+}
+
+/* ===================== CREATE SONG ===================== */
 exports.createSong = async (req, res) => {
   try {
     const { userId, title, artists, publicDate, lyrics } = req.body;
@@ -14,30 +40,28 @@ exports.createSong = async (req, res) => {
     const metadata = await parseFile(audioFile.path);
     const duration = Math.floor(metadata.format.duration);
 
-    // Upload audio
     const audioUpload = await cloudinary.uploader.upload(audioFile.path, {
       resource_type: "video",
     });
-
-    // Upload image
     const imageUpload = await cloudinary.uploader.upload(imageFile.path);
 
-    // Xóa file local
     fs.unlinkSync(audioFile.path);
     fs.unlinkSync(imageFile.path);
 
-    const song = await Song.create({
-      userId,
-      title,
-      duration,
-      audioUrl: audioUpload.secure_url,
-      thumbnailUrl: imageUpload.secure_url,
-      artists: artists ? artists.split(",") : [],
-      lyrics,
-      publicDate,
+    const song = await prisma.song.create({
+      data: {
+        userId,
+        title,
+        duration,
+        audioUrl: audioUpload.secure_url,
+        thumbnailUrl: imageUpload.secure_url,
+        artists: artists ? artists.split(",").map((a) => a.trim()) : [],
+        lyrics: lyrics || "",
+        publicDate: new Date(publicDate),
+      },
     });
 
-    res.json(song);
+    res.json(toSongResponse(song));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -50,43 +74,17 @@ exports.getSongs = async (req, res) => {
     const limit = Number(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const songs = await Song.find({ isPublic: true })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select("-__v");
-
-    const total = await Song.countDocuments({ isPublic: true });
-
-    // 👉 lấy danh sách userId (tránh gọi trùng)
-    const userIds = [...new Set(songs.map((s) => s.userId))];
-
-    // 👉 gọi AuthService cho từng user
-    const userMap = {};
-
-    await Promise.all(
-      userIds.map(async (userId) => {
-        try {
-          const user = await getUserById(userId);
-          userMap[userId] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
-        } catch (err) {
-          userMap[userId] = "Unknown artist";
-        }
+    const [songs, total] = await Promise.all([
+      prisma.song.findMany({
+        where: { isPublic: true },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
       }),
-    );
+      prisma.song.count({ where: { isPublic: true } }),
+    ]);
 
-    const songsWithUser = songs.map((song) => {
-      const user = userMap[song.userId];
-
-      return {
-        ...song.toObject(),
-        username: user?.username || "Unknown artist",
-        userAvatar: user?.avatar || null,
-      };
-    });
+    const songsWithUser = await attachUserInfo(songs);
 
     res.json({
       data: songsWithUser,
@@ -107,42 +105,15 @@ exports.getTopSongs = async (req, res) => {
   try {
     const limit = Number(req.query.limit) || 10;
 
-    const songs = await Song.find({ isPublic: true })
-      .sort({ playCount: -1 })
-      .limit(limit)
-      .select("-__v");
+    const songs = await prisma.song.findMany({
+      where: { isPublic: true },
+      orderBy: { playCount: "desc" },
+      take: limit,
+    });
 
-    if (!songs.length) {
-      return res.json({ data: [] });
-    }
+    if (!songs.length) return res.json({ data: [] });
 
-    /* ===== attach user info ===== */
-    const userIds = [...new Set(songs.map((s) => s.userId))];
-    const userMap = {};
-
-    await Promise.all(
-      userIds.map(async (uid) => {
-        try {
-          const user = await getUserById(uid);
-          userMap[uid] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
-        } catch {
-          userMap[uid] = {
-            username: "Unknown artist",
-            avatar: null,
-          };
-        }
-      }),
-    );
-
-    const result = songs.map((song) => ({
-      ...song.toObject(),
-      username: userMap[song.userId]?.username,
-      userAvatar: userMap[song.userId]?.avatar,
-    }));
-
+    const result = await attachUserInfo(songs);
     res.json({ data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -158,61 +129,45 @@ exports.getRecommendedSongs = async (req, res) => {
     let recommendedSongs = [];
 
     if (userId) {
-      const likes = await Like.find({ userId }).limit(20);
-      const likedSongIds = likes.map((l) => l.songId);
+      const likes = await prisma.like.findMany({
+        where: { userId },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      });
 
-      if (likedSongIds.length) {
-        const likedSongs = await Song.find({ _id: { $in: likedSongIds } });
+      if (likes.length) {
+        const likedSongIds = likes.map((l) => l.songId);
+        const likedSongs = await prisma.song.findMany({
+          where: { id: { in: likedSongIds } },
+        });
 
-        const tags = [...new Set(likedSongs.flatMap((s) => s.tags || []))];
-        const artists = [
-          ...new Set(likedSongs.flatMap((s) => s.artists || [])),
-        ];
+        const artists = [...new Set(likedSongs.flatMap((s) => s.artists || []))];
 
-        recommendedSongs = await Song.find({
-          isPublic: true,
-          _id: { $nin: likedSongIds },
-          $or: [{ tags: { $in: tags } }, { artists: { $in: artists } }],
-        })
-          .sort({ playCount: -1 })
-          .limit(limit);
+        if (artists.length) {
+          recommendedSongs = await prisma.song.findMany({
+            where: {
+              isPublic: true,
+              id: { notIn: likedSongIds },
+              artists: { hasSome: artists },
+            },
+            orderBy: { playCount: "desc" },
+            take: limit,
+          });
+        }
       }
     }
 
-    /* fallback random */
     if (!recommendedSongs.length) {
-      recommendedSongs = await Song.aggregate([
-        { $match: { isPublic: true } },
-        { $sample: { size: limit } },
-      ]);
+      const count = await prisma.song.count({ where: { isPublic: true } });
+      const skip = Math.max(0, Math.floor(Math.random() * Math.max(0, count - limit)));
+      recommendedSongs = await prisma.song.findMany({
+        where: { isPublic: true },
+        skip,
+        take: limit,
+      });
     }
 
-    const userIds = [...new Set(recommendedSongs.map((s) => s.userId))];
-    const userMap = {};
-
-    await Promise.all(
-      userIds.map(async (uid) => {
-        try {
-          const user = await getUserById(uid);
-          userMap[uid] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
-        } catch {
-          userMap[uid] = {
-            username: "Unknown artist",
-            avatar: null,
-          };
-        }
-      }),
-    );
-
-    const result = recommendedSongs.map((song) => ({
-      ...(song.toObject ? song.toObject() : song),
-      username: userMap[song.userId]?.username,
-      userAvatar: userMap[song.userId]?.avatar,
-    }));
-
+    const result = await attachUserInfo(recommendedSongs);
     res.json({ data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -225,21 +180,13 @@ exports.getSongsByUser = async (req, res) => {
     const { userId } = req.params;
     const { sort } = req.query;
 
-    if (!userId) {
-      return res.status(400).json({ message: "userId is required" });
-    }
+    if (!userId) return res.status(400).json({ message: "userId is required" });
 
-    let sortOption = { createdAt: -1 }; // default
+    const orderBy = sort === "play" ? { playCount: "desc" } : { createdAt: "desc" };
 
-    if (sort === "play") {
-      sortOption = { playCount: -1 };
-    }
+    const songs = await prisma.song.findMany({ where: { userId }, orderBy });
 
-    const songs = await Song.find({ userId }).sort(sortOption).select("-__v");
-
-    if (!songs.length) {
-      return res.json({ data: [] });
-    }
+    if (!songs.length) return res.json({ data: [] });
 
     let username = "Unknown artist";
     let userAvatar = null;
@@ -253,7 +200,7 @@ exports.getSongsByUser = async (req, res) => {
     } catch {}
 
     const songsWithUser = songs.map((song) => ({
-      ...song.toObject(),
+      ...toSongResponse(song),
       username,
       userAvatar,
     }));
@@ -269,10 +216,8 @@ exports.getSongById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const song = await Song.findById(id).select("-__v");
-    if (!song) {
-      return res.status(404).json({ message: "Song not found" });
-    }
+    const song = await prisma.song.findUnique({ where: { id } });
+    if (!song) return res.status(404).json({ message: "Song not found" });
 
     let username = "Unknown artist";
     let userAvatar = null;
@@ -283,15 +228,9 @@ exports.getSongById = async (req, res) => {
         username = user.username || username;
         userAvatar = user.avatar_url || null;
       }
-    } catch (err) {
-      // fallback giữ nguyên
-    }
+    } catch {}
 
-    res.json({
-      ...song.toObject(),
-      username,
-      userAvatar,
-    });
+    res.json({ ...toSongResponse(song), username, userAvatar });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -301,68 +240,51 @@ exports.getSongById = async (req, res) => {
 exports.updateSong = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, artists, album, tags, lyrics, publicDate } = req.body;
+    const { title, artists, lyrics, publicDate } = req.body;
 
-    const song = await Song.findById(id);
-    if (!song) {
-      return res.status(404).json({ message: "Song not found" });
-    }
+    const existing = await prisma.song.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ message: "Song not found" });
 
-    /* ===== UPDATE TEXT FIELDS ===== */
-    if (title !== undefined) song.title = title;
-    if (artists !== undefined) song.artists = artists ? artists.split(",") : [];
-    if (album !== undefined) song.album = album;
-    if (tags !== undefined) song.tags = tags ? tags.split(",") : [];
-    if (lyrics !== undefined) song.lyrics = lyrics;
-    if (publicDate !== undefined) song.publicDate = publicDate;
+    const updateData = {};
 
-    /* ===== UPDATE AUDIO ===== */
+    if (title !== undefined) updateData.title = title;
+    if (artists !== undefined) updateData.artists = artists ? artists.split(",").map((a) => a.trim()) : [];
+    if (lyrics !== undefined) updateData.lyrics = lyrics;
+    if (publicDate !== undefined) updateData.publicDate = new Date(publicDate);
+
     if (req.files?.audio?.[0]) {
       const audioFile = req.files.audio[0];
       const { parseFile } = await import("music-metadata");
-
-      // parse duration
       const metadata = await parseFile(audioFile.path);
-      song.duration = Math.floor(metadata.format.duration);
+      updateData.duration = Math.floor(metadata.format.duration);
 
-      // xoá audio cũ
-      if (song.audioUrl) {
-        const publicId = song.audioUrl.split("/").pop().split(".")[0];
-        await cloudinary.uploader.destroy(publicId, {
-          resource_type: "video",
-        });
+      if (existing.audioUrl) {
+        const publicId = existing.audioUrl.split("/").pop().split(".")[0];
+        await cloudinary.uploader.destroy(publicId, { resource_type: "video" });
       }
 
-      // upload audio mới
       const audioUpload = await cloudinary.uploader.upload(audioFile.path, {
         resource_type: "video",
       });
-
-      song.audioUrl = audioUpload.secure_url;
-
+      updateData.audioUrl = audioUpload.secure_url;
       fs.unlinkSync(audioFile.path);
     }
 
-    /* ===== UPDATE THUMBNAIL ===== */
     if (req.files?.thumbnail?.[0]) {
       const imageFile = req.files.thumbnail[0];
 
-      // xoá ảnh cũ
-      if (song.thumbnailUrl) {
-        const publicId = song.thumbnailUrl.split("/").pop().split(".")[0];
+      if (existing.thumbnailUrl) {
+        const publicId = existing.thumbnailUrl.split("/").pop().split(".")[0];
         await cloudinary.uploader.destroy(publicId);
       }
 
-      // upload ảnh mới
       const imageUpload = await cloudinary.uploader.upload(imageFile.path);
-      song.thumbnailUrl = imageUpload.secure_url;
-
+      updateData.thumbnailUrl = imageUpload.secure_url;
       fs.unlinkSync(imageFile.path);
     }
 
-    await song.save();
-
-    res.json(song);
+    const song = await prisma.song.update({ where: { id }, data: updateData });
+    res.json(toSongResponse(song));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -373,27 +295,20 @@ exports.deleteSong = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const song = await Song.findById(id);
-    if (!song) {
-      return res.status(404).json({ message: "Song not found" });
-    }
+    const song = await prisma.song.findUnique({ where: { id } });
+    if (!song) return res.status(404).json({ message: "Song not found" });
 
-    /* ===== DELETE AUDIO ===== */
     if (song.audioUrl) {
       const audioPublicId = song.audioUrl.split("/").pop().split(".")[0];
-      await cloudinary.uploader.destroy(audioPublicId, {
-        resource_type: "video",
-      });
+      await cloudinary.uploader.destroy(audioPublicId, { resource_type: "video" });
     }
 
-    /* ===== DELETE THUMBNAIL ===== */
     if (song.thumbnailUrl) {
       const imagePublicId = song.thumbnailUrl.split("/").pop().split(".")[0];
       await cloudinary.uploader.destroy(imagePublicId);
     }
 
-    await song.deleteOne();
-
+    await prisma.song.delete({ where: { id } });
     res.json({ message: "Song deleted successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -404,66 +319,25 @@ exports.deleteSong = async (req, res) => {
 exports.searchSongs = async (req, res) => {
   try {
     const { q } = req.query;
-
-    if (!q || !q.trim()) {
-      return res.json({ data: [] });
-    }
+    if (!q || !q.trim()) return res.json({ data: [] });
 
     const keyword = q.trim();
+    const normalized = removeVietnameseTones(keyword);
 
-    // 1️⃣ tìm bài hát (KHÔNG PHÂN BIỆT DẤU)
-    const songs = await Song.find({
-      isPublic: true,
-      $or: [
-        { title: { $regex: keyword, $options: "i" } },
-        { artists: { $regex: keyword, $options: "i" } },
-        { album: { $regex: keyword, $options: "i" } },
-        { tags: { $regex: keyword, $options: "i" } },
-      ],
-    })
-      .collation({
-        locale: "vi",
-        strength: 1, // 🔥 bỏ dấu + không phân biệt hoa thường
-      })
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .select("-__v");
-
-    if (!songs.length) {
-      return res.json({ data: [] });
+    const orClauses = [{ title: { contains: keyword, mode: "insensitive" } }];
+    if (normalized !== keyword.toLowerCase()) {
+      orClauses.push({ title: { contains: normalized, mode: "insensitive" } });
     }
 
-    // 2️⃣ lấy user info (tránh gọi trùng)
-    const userIds = [...new Set(songs.map((s) => s.userId))];
-    const userMap = {};
-
-    await Promise.all(
-      userIds.map(async (userId) => {
-        try {
-          const user = await getUserById(userId);
-          userMap[userId] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
-        } catch {
-          userMap[userId] = {
-            username: "Unknown artist",
-            avatar: null,
-          };
-        }
-      }),
-    );
-
-    // 3️⃣ gắn user vào song
-    const result = songs.map((song) => {
-      const user = userMap[song.userId];
-      return {
-        ...song.toObject(),
-        username: user?.username,
-        userAvatar: user?.avatar,
-      };
+    const songs = await prisma.song.findMany({
+      where: { isPublic: true, OR: orClauses },
+      orderBy: { createdAt: "desc" },
+      take: 20,
     });
 
+    if (!songs.length) return res.json({ data: [] });
+
+    const result = await attachUserInfo(songs);
     res.json({ data: result });
   } catch (err) {
     console.error(err);
@@ -471,18 +345,16 @@ exports.searchSongs = async (req, res) => {
   }
 };
 
+/* ===================== LIKE / UNLIKE ===================== */
 exports.likeSong = async (req, res) => {
   try {
     const { id: songId } = req.params;
     const { userId } = req.body;
 
-    await Like.create({ userId, songId });
-
+    await prisma.like.create({ data: { userId, songId } });
     res.json({ liked: true });
   } catch (err) {
-    if (err.code === 11000) {
-      return res.json({ liked: true });
-    }
+    if (err.code === "P2002") return res.json({ liked: true });
     res.status(500).json({ error: err.message });
   }
 };
@@ -492,8 +364,7 @@ exports.unlikeSong = async (req, res) => {
     const { id: songId } = req.params;
     const { userId } = req.body;
 
-    await Like.findOneAndDelete({ userId, songId });
-
+    await prisma.like.deleteMany({ where: { userId, songId } });
     res.json({ liked: false });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -501,72 +372,24 @@ exports.unlikeSong = async (req, res) => {
 };
 
 exports.isSongLiked = async (req, res) => {
-  const { id: songId } = req.params;
-  const { userId } = req.query;
+  try {
+    const { id: songId } = req.params;
+    const { userId } = req.query;
 
-  const liked = await Like.exists({ userId, songId });
-  res.json({ liked: !!liked });
+    const like = await prisma.like.findUnique({
+      where: { userId_songId: { userId, songId } },
+    });
+    res.json({ liked: !!like });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 exports.getSongLikes = async (req, res) => {
-  const { id: songId } = req.params;
-
-  const count = await Like.countDocuments({ songId });
-  res.json({ likes: count });
-};
-
-exports.getLikedSongs = async (req, res) => {
   try {
-    const { userId } = req.params;
-
-    // 1️⃣ lấy danh sách like
-    const likes = await Like.find({ userId }).sort({ createdAt: -1 });
-
-    if (!likes.length) {
-      return res.json({ data: [] });
-    }
-
-    const songIds = likes.map((l) => l.songId);
-
-    // 2️⃣ lấy bài hát
-    const songs = await Song.find({ _id: { $in: songIds } }).select("-__v");
-
-    // giữ thứ tự theo thời gian like
-    const songMap = {};
-    songs.forEach((s) => (songMap[s._id.toString()] = s));
-
-    const orderedSongs = songIds
-      .map((id) => songMap[id.toString()])
-      .filter(Boolean);
-
-    // 3️⃣ gắn username
-    const userIds = [...new Set(orderedSongs.map((s) => s.userId))];
-    const userMap = {};
-
-    await Promise.all(
-      userIds.map(async (uid) => {
-        try {
-          const user = await getUserById(uid);
-          userMap[uid] = {
-            username: user.username,
-            avatar: user.avatar_url || null,
-          };
-        } catch {
-          userMap[uid] = {
-            username: "Unknown artist",
-            avatar: null,
-          };
-        }
-      }),
-    );
-
-    const result = orderedSongs.map((song) => ({
-      ...song.toObject(),
-      username: userMap[song.userId]?.username,
-      userAvatar: userMap[song.userId]?.avatar,
-    }));
-
-    res.json({ data: result });
+    const { id: songId } = req.params;
+    const count = await prisma.like.count({ where: { songId } });
+    res.json({ likes: count });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -575,10 +398,34 @@ exports.getLikedSongs = async (req, res) => {
 exports.getSongLikeCount = async (req, res) => {
   try {
     const { id: songId } = req.params;
-
-    const count = await Like.countDocuments({ songId });
-
+    const count = await prisma.like.count({ where: { songId } });
     res.json({ likes: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ===================== LIKED SONGS ===================== */
+exports.getLikedSongs = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const likes = await prisma.like.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!likes.length) return res.json({ data: [] });
+
+    const songIds = likes.map((l) => l.songId);
+    const songs = await prisma.song.findMany({ where: { id: { in: songIds } } });
+
+    const songMap = {};
+    songs.forEach((s) => (songMap[s.id] = s));
+    const orderedSongs = songIds.map((id) => songMap[id]).filter(Boolean);
+
+    const result = await attachUserInfo(orderedSongs);
+    res.json({ data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
