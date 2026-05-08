@@ -2,21 +2,37 @@ const express = require("express");
 const router = express.Router();
 const ctrl = require("../controllers/ai.controller");
 
-// Music generation
-router.post("/generate", ctrl.generate);
-router.get("/generate/:taskId/status", ctrl.getStatus);
+// ── Music generation ──────────────────────────────────────────────────────────
+router.post("/generate",                 ctrl.generate);
+router.get("/generate/:taskId/status",   ctrl.getStatus);
 
-// User history
-router.get("/history", ctrl.getHistory);
+// ── Extend / cover / upload operations ───────────────────────────────────────
+router.post("/extend",                   ctrl.extendMusicHandler);
+router.post("/upload-cover",             ctrl.uploadCoverHandler);
+router.post("/upload-extend",            ctrl.uploadExtendHandler);
 
-// Download proxy — serves audio with correct Content-Disposition so browsers
-// trigger a file save instead of navigating (cross-origin <a download> is blocked)
-router.get("/download/:taskId/:songId", ctrl.downloadSong);
+// ── Audio enhancement ─────────────────────────────────────────────────────────
+router.post("/add-vocals",               ctrl.addVocalsHandler);
+router.post("/add-instrumental",         ctrl.addInstrumentalHandler);
 
-// Suno webhook callback (called by Suno servers)
-router.post("/callback", ctrl.handleCallback);
+// ── Lyrics ────────────────────────────────────────────────────────────────────
+router.post("/lyrics",                   ctrl.generateLyricsHandler);
+router.get("/lyrics/history",            ctrl.getLyricsHistory);
+router.get("/lyrics/:taskId/status",     ctrl.getLyricsStatusHandler);
 
-// Credits
-router.get("/credits", ctrl.getCredits);
+// ── Timestamped lyrics (proxy — no DB storage) ───────────────────────────────
+router.post("/timestamped-lyrics",       ctrl.getTimestampedLyricsHandler);
+
+// ── User history (all music operation types) ─────────────────────────────────
+router.get("/history",                   ctrl.getHistory);
+
+// ── Download proxy ───────────────────────────────────────────────────────────
+router.get("/download/:taskId/:songId",  ctrl.downloadSong);
+
+// ── Suno webhook callback ─────────────────────────────────────────────────────
+router.post("/callback",                 ctrl.handleCallback);
+
+// ── Credits ───────────────────────────────────────────────────────────────────
+router.get("/credits",                   ctrl.getCredits);
 
 module.exports = router;

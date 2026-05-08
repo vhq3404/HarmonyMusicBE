@@ -12,28 +12,11 @@ const sunoClient = axios.create({
   timeout: 30000,
 });
 
-/**
- * Submit a music generation task to Suno.
- * @param {Object} params
- * @param {boolean} params.customMode
- * @param {boolean} params.instrumental
- * @param {string}  params.model
- * @param {string}  params.callBackUrl
- * @param {string}  [params.prompt]
- * @param {string}  [params.style]
- * @param {string}  [params.title]
- * @param {string}  [params.negativeTags]
- * @param {string}  [params.vocalGender]
- */
 const generateMusic = async (params) => {
   const { data } = await sunoClient.post("/api/v1/generate", params);
   return data;
 };
 
-/**
- * Poll generation status by taskId.
- * @param {string} taskId
- */
 const getGenerationStatus = async (taskId) => {
   const { data } = await sunoClient.get(
     `/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`
@@ -41,12 +24,66 @@ const getGenerationStatus = async (taskId) => {
   return data;
 };
 
-/**
- * Fetch remaining API credits.
- */
 const getCredits = async () => {
   const { data } = await sunoClient.get("/api/v1/generate/credit");
   return data;
 };
 
-module.exports = { generateMusic, getGenerationStatus, getCredits };
+const extendMusic = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/generate/extend", params);
+  return data;
+};
+
+const uploadCoverAudio = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/generate/upload-cover", params);
+  return data;
+};
+
+const uploadExtendAudio = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/generate/upload-extend", params);
+  return data;
+};
+
+const addVocals = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/generate/add-vocals", params);
+  return data;
+};
+
+const addInstrumental = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/generate/add-instrumental", params);
+  return data;
+};
+
+const generateLyrics = async (params) => {
+  const { data } = await sunoClient.post("/api/v1/lyrics", params);
+  return data;
+};
+
+const getLyricsStatus = async (taskId) => {
+  const { data } = await sunoClient.get(
+    `/api/v1/lyrics/record-info?taskId=${encodeURIComponent(taskId)}`
+  );
+  return data;
+};
+
+const getTimestampedLyrics = async (taskId, audioId) => {
+  const { data } = await sunoClient.post("/api/v1/generate/get-timestamped-lyrics", {
+    taskId,
+    audioId,
+  });
+  return data;
+};
+
+module.exports = {
+  generateMusic,
+  getGenerationStatus,
+  getCredits,
+  extendMusic,
+  uploadCoverAudio,
+  uploadExtendAudio,
+  addVocals,
+  addInstrumental,
+  generateLyrics,
+  getLyricsStatus,
+  getTimestampedLyrics,
+};
