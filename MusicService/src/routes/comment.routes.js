@@ -1,14 +1,14 @@
-// routes/comment.routes.js
-const express = require("express");
-const router = express.Router();
+const express    = require("express");
+const router     = express.Router();
+const { verifyToken } = require("../middleware/auth");
 const commentCtrl = require("../controllers/comment.controller");
 
-/* ===== SONG COMMENTS ===== */
-router.get("/songs/:id/comments", commentCtrl.getCommentsBySong);
-router.post("/songs/:id/comments", commentCtrl.createComment);
-router.get("/songs/:id/comments/count", commentCtrl.getCommentCount);
+/* ── Public ─────────────────────────────────────── */
+router.get("/songs/:id/comments",        commentCtrl.getCommentsBySong);
+router.get("/songs/:id/comments/count",  commentCtrl.getCommentCount);
 
-/* ===== COMMENT ===== */
-router.delete("/comments/:id", commentCtrl.deleteComment);
+/* ── Protected ──────────────────────────────────── */
+router.post("/songs/:id/comments",       verifyToken, commentCtrl.createComment);
+router.delete("/comments/:id",           verifyToken, commentCtrl.deleteComment);
 
 module.exports = router;

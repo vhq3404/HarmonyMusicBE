@@ -11,12 +11,13 @@ exports.getCommentsBySong = async (req, res) => {
     if (!song) return res.status(404).json({ message: "Song not found" });
 
     const comments = await prisma.comment.findMany({
-      where: { songId },
+      where:   { songId },
       orderBy: { createdAt: "desc" },
     });
 
     if (!comments.length) return res.json({ data: [] });
 
+    /* Batch-resolve users with caching — avoids N+1 AuthService calls */
     const userIds = [...new Set(comments.map((c) => c.userId))];
     const userMap = {};
 
@@ -33,7 +34,7 @@ exports.getCommentsBySong = async (req, res) => {
 
     const result = comments.map((c) => ({
       ...toCommentResponse(c),
-      username: userMap[c.userId]?.username,
+      username:   userMap[c.userId]?.username,
       userAvatar: userMap[c.userId]?.avatar,
     }));
 
@@ -47,11 +48,11 @@ exports.getCommentsBySong = async (req, res) => {
 exports.createComment = async (req, res) => {
   try {
     const { id: songId } = req.params;
-    const { userId, content } = req.body;
+    /* userId from JWT — never from request body */
+    const userId  = req.user.id;
+    const { content } = req.body;
 
-    if (!content || !content.trim()) {
-      return res.status(400).json({ message: "Content is required" });
-    }
+    if (!content?.trim()) return res.status(400).json({ message: "Content is required" });
 
     const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
     if (!song) return res.status(404).json({ message: "Song not found" });
@@ -60,15 +61,11 @@ exports.createComment = async (req, res) => {
       data: { songId, userId, content: content.trim() },
     });
 
-    let username = "Unknown user";
+    let username   = "Unknown user";
     let userAvatar = null;
-
     try {
       const user = await getUserById(userId);
-      if (user) {
-        username = user.username || username;
-        userAvatar = user.avatar_url || null;
-      }
+      if (user) { username = user.username || username; userAvatar = user.avatar_url || null; }
     } catch {}
 
     res.json({ ...toCommentResponse(comment), username, userAvatar });
@@ -80,13 +77,15 @@ exports.createComment = async (req, res) => {
 /* ===================== DELETE COMMENT ===================== */
 exports.deleteComment = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { userId } = req.query;
+    const { id }   = req.params;
+    const userId   = req.user.id;
+    const userRole = req.user.role;
 
     const comment = await prisma.comment.findUnique({ where: { id } });
     if (!comment) return res.status(404).json({ message: "Comment not found" });
 
-    if (comment.userId !== userId) {
+    /* Owner or admin can delete */
+    if (comment.userId !== userId && userRole !== "admin") {
       return res.status(403).json({ message: "Forbidden" });
     }
 

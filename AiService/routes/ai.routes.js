@@ -2,41 +2,39 @@ const express     = require("express");
 const router      = express.Router();
 const ctrl        = require("../controllers/ai.controller");
 const audioUpload = require("../middleware/audioUpload");
+const { verifyToken } = require("../middleware/auth");
 
-// ── Audio file upload ─────────────────────────────────────────────────────────
-router.post("/upload-audio", audioUpload.single("audio"), ctrl.uploadAudio);
+/* ── Public / webhook ─────────────────────────────────────────────────────── */
+// Suno webhook — must remain unauthenticated (called by Suno servers, no JWT)
+router.post("/callback",                ctrl.handleCallback);
 
-// ── Music generation ──────────────────────────────────────────────────────────
-router.post("/generate",                 ctrl.generate);
-router.get("/generate/:taskId/status",   ctrl.getStatus);
+/* ── Protected — require valid JWT ───────────────────────────────────────── */
 
-// ── Extend / cover / upload operations ───────────────────────────────────────
-router.post("/extend",                   ctrl.extendMusicHandler);
-router.post("/upload-cover",             ctrl.uploadCoverHandler);
-router.post("/upload-extend",            ctrl.uploadExtendHandler);
+// Audio file upload (Cloudinary proxy)
+router.post("/upload-audio",            verifyToken, audioUpload.single("audio"), ctrl.uploadAudio);
 
-// ── Audio enhancement ─────────────────────────────────────────────────────────
-router.post("/add-vocals",               ctrl.addVocalsHandler);
-router.post("/add-instrumental",         ctrl.addInstrumentalHandler);
+// Music generation operations
+router.post("/generate",                verifyToken, ctrl.generate);
+router.get("/generate/:taskId/status",  verifyToken, ctrl.getStatus);
+router.post("/extend",                  verifyToken, ctrl.extendMusicHandler);
+router.post("/upload-cover",            verifyToken, ctrl.uploadCoverHandler);
+router.post("/upload-extend",           verifyToken, ctrl.uploadExtendHandler);
+router.post("/add-vocals",              verifyToken, ctrl.addVocalsHandler);
+router.post("/add-instrumental",        verifyToken, ctrl.addInstrumentalHandler);
 
-// ── Lyrics ────────────────────────────────────────────────────────────────────
-router.post("/lyrics",                   ctrl.generateLyricsHandler);
-router.get("/lyrics/history",            ctrl.getLyricsHistory);
-router.get("/lyrics/:taskId/status",     ctrl.getLyricsStatusHandler);
+// Lyrics
+router.post("/lyrics",                  verifyToken, ctrl.generateLyricsHandler);
+router.get("/lyrics/history",           verifyToken, ctrl.getLyricsHistory);
+router.get("/lyrics/:taskId/status",    verifyToken, ctrl.getLyricsStatusHandler);
 
-// ── Timestamped lyrics (proxy — no DB storage) ───────────────────────────────
-router.post("/timestamped-lyrics",       ctrl.getTimestampedLyricsHandler);
+// Timestamped lyrics proxy
+router.post("/timestamped-lyrics",      verifyToken, ctrl.getTimestampedLyricsHandler);
 
-// ── User history (all music operation types) ─────────────────────────────────
-router.get("/history",                   ctrl.getHistory);
+// User history & download
+router.get("/history",                  verifyToken, ctrl.getHistory);
+router.get("/download/:taskId/:songId", verifyToken, ctrl.downloadSong);
 
-// ── Download proxy ───────────────────────────────────────────────────────────
-router.get("/download/:taskId/:songId",  ctrl.downloadSong);
-
-// ── Suno webhook callback ─────────────────────────────────────────────────────
-router.post("/callback",                 ctrl.handleCallback);
-
-// ── Credits ───────────────────────────────────────────────────────────────────
-router.get("/credits",                   ctrl.getCredits);
+// Credits
+router.get("/credits",                  verifyToken, ctrl.getCredits);
 
 module.exports = router;

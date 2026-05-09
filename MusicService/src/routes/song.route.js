@@ -1,6 +1,8 @@
-const express = require("express");
-const router = express.Router();
-const upload = require("../utils/upload");
+const express  = require("express");
+const router   = express.Router();
+const upload   = require("../utils/upload");
+const { verifyToken, optionalToken } = require("../middleware/auth");
+const { uploadLimiter } = require("../middleware/security");
 const {
   createSong,
   searchSongs,
@@ -12,50 +14,43 @@ const {
   getSongLikeCount,
   updateSong,
   deleteSong,
-
   likeSong,
   unlikeSong,
   isSongLiked,
   getLikedSongs,
 } = require("../controllers/song.controller");
 
-/* ===================== GET ===================== */
-router.get("/search", searchSongs);
-router.get("/top", getTopSongs);
-router.get("/recommend", getRecommendedSongs);
-
+/* ── Public reads ───────────────────────────────── */
+router.get("/search",           searchSongs);
+router.get("/top",              getTopSongs);
+router.get("/recommend",        getRecommendedSongs);
 router.get("/users/:userId/liked-songs", getLikedSongs);
-router.get("/user/:userId", getSongsByUser);
+router.get("/user/:userId",     getSongsByUser);
+router.get("/:id/likes",        getSongLikeCount);
+router.get("/:id/liked",        optionalToken, isSongLiked);
+router.get("/",                 getSongs);
+router.get("/:id",              getSongById);
 
-router.get("/:id/likes", getSongLikeCount);
-router.get("/:id/liked", isSongLiked);
+/* ── Protected mutations ────────────────────────── */
+router.post("/:id/like",        verifyToken, likeSong);
+router.delete("/:id/like",      verifyToken, unlikeSong);
 
-router.get("/", getSongs);
-router.get("/:id", getSongById);
-
-/* ===================== POST ===================== */
-router.post("/:id/like", likeSong);
 router.post(
   "/",
-  upload.fields([
-    { name: "audio", maxCount: 1 },
-    { name: "thumbnail", maxCount: 1 },
-  ]),
+  uploadLimiter,
+  verifyToken,
+  upload.fields([{ name: "audio", maxCount: 1 }, { name: "thumbnail", maxCount: 1 }]),
   createSong,
 );
 
-/* ===================== PUT ===================== */
 router.put(
   "/:id",
-  upload.fields([
-    { name: "audio", maxCount: 1 },
-    { name: "thumbnail", maxCount: 1 },
-  ]),
+  uploadLimiter,
+  verifyToken,
+  upload.fields([{ name: "audio", maxCount: 1 }, { name: "thumbnail", maxCount: 1 }]),
   updateSong,
 );
 
-/* ===================== DELETE ===================== */
-router.delete("/:id/like", unlikeSong);
-router.delete("/:id", deleteSong);
+router.delete("/:id", verifyToken, deleteSong);
 
 module.exports = router;

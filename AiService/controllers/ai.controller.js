@@ -87,9 +87,10 @@ function isPublicUrl(url) {
    In-memory TTL caches
 ───────────────────────────────────────────── */
 
-const statusCache      = new Map();
+const statusCache       = new Map();
 const lyricsStatusCache = new Map();
-const STATUS_CACHE_TTL = 4000;
+const STATUS_CACHE_TTL  = 4000;
+const CACHE_MAX_SIZE    = 500;
 
 function getCached(map, key) {
   const entry = map.get(key);
@@ -99,8 +100,19 @@ function getCached(map, key) {
 }
 
 function setCache(map, key, data) {
+  if (map.size >= CACHE_MAX_SIZE) {
+    map.delete(map.keys().next().value);
+  }
   map.set(key, { data, expiresAt: Date.now() + STATUS_CACHE_TTL });
 }
+
+/* Periodic eviction for status caches (unref so it doesn't block shutdown) */
+const cacheEvictTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of statusCache)       { if (now > v.expiresAt) statusCache.delete(k); }
+  for (const [k, v] of lyricsStatusCache) { if (now > v.expiresAt) lyricsStatusCache.delete(k); }
+}, 60_000);
+cacheEvictTimer.unref();
 
 /* ─────────────────────────────────────────────
    Normalize Suno track data to consistent camelCase.
@@ -237,8 +249,9 @@ const callBackUrl = () =>
 ───────────────────────────────────────────── */
 
 const generate = async (req, res) => {
+  /* userId from JWT middleware */
+  const userId = req.user.id;
   const {
-    userId,
     prompt,
     customMode  = false,
     instrumental = false,
@@ -248,8 +261,6 @@ const generate = async (req, res) => {
     negativeTags,
     vocalGender,
   } = req.body;
-
-  if (!userId) return res.status(400).json({ error: "userId is required" });
 
   try {
     const activeTaskId = await checkDuplicateGuard(userId);
@@ -372,8 +383,7 @@ const getStatus = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const getHistory = async (req, res) => {
-  const { userId } = req.query;
-  if (!userId) return res.status(400).json({ error: "userId is required" });
+  const userId = req.user.id;
 
   try {
     const { rows } = await pool.query(
@@ -521,8 +531,8 @@ const getCredits = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const extendMusicHandler = async (req, res) => {
+  const userId = req.user.id;
   const {
-    userId,
     audioId,
     model          = "V4",
     defaultParamFlag = false,
@@ -532,7 +542,6 @@ const extendMusicHandler = async (req, res) => {
     continueAt,
   } = req.body;
 
-  if (!userId)  return res.status(400).json({ error: "userId is required" });
   if (!audioId) return res.status(400).json({ error: "audioId is required" });
 
   try {
@@ -583,8 +592,8 @@ const extendMusicHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const uploadCoverHandler = async (req, res) => {
+  const userId = req.user.id;
   const {
-    userId,
     uploadUrl,
     model        = "V4",
     customMode   = false,
@@ -596,7 +605,6 @@ const uploadCoverHandler = async (req, res) => {
     vocalGender,
   } = req.body;
 
-  if (!userId)    return res.status(400).json({ error: "userId is required" });
   if (!uploadUrl) return res.status(400).json({ error: "uploadUrl is required" });
   if (!isPublicUrl(uploadUrl))
     return res.status(400).json({ error: "Audio file URL must be publicly accessible (not localhost or private network)" });
@@ -650,8 +658,8 @@ const uploadCoverHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const uploadExtendHandler = async (req, res) => {
+  const userId = req.user.id;
   const {
-    userId,
     uploadUrl,
     model          = "V4",
     defaultParamFlag = false,
@@ -714,8 +722,8 @@ const uploadExtendHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const addVocalsHandler = async (req, res) => {
+  const userId = req.user.id;
   const {
-    userId,
     uploadUrl,
     prompt,
     title,
@@ -775,8 +783,8 @@ const addVocalsHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const addInstrumentalHandler = async (req, res) => {
+  const userId = req.user.id;
   const {
-    userId,
     uploadUrl,
     title,
     tags,
@@ -833,9 +841,8 @@ const addInstrumentalHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const generateLyricsHandler = async (req, res) => {
-  const { userId, prompt } = req.body;
-
-  if (!userId) return res.status(400).json({ error: "userId is required" });
+  const userId    = req.user.id;
+  const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
   if (prompt.length > 200)
     return res.status(400).json({ error: "Prompt exceeds 200 characters" });
@@ -956,8 +963,7 @@ const getLyricsStatusHandler = async (req, res) => {
 ───────────────────────────────────────────── */
 
 const getLyricsHistory = async (req, res) => {
-  const { userId } = req.query;
-  if (!userId) return res.status(400).json({ error: "userId is required" });
+  const userId = req.user.id;
 
   try {
     const { rows } = await pool.query(
