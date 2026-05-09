@@ -1,6 +1,10 @@
-const express = require("express");
-const router = express.Router();
-const ctrl = require("../controllers/ai.controller");
+const express     = require("express");
+const router      = express.Router();
+const ctrl        = require("../controllers/ai.controller");
+const audioUpload = require("../middleware/audioUpload");
+
+// ── Audio file upload ─────────────────────────────────────────────────────────
+router.post("/upload-audio", audioUpload.single("audio"), ctrl.uploadAudio);
 
 // ── Music generation ──────────────────────────────────────────────────────────
 router.post("/generate",                 ctrl.generate);

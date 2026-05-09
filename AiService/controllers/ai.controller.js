@@ -1,6 +1,8 @@
-const axios = require("axios");
-const pool = require("../db");
+const axios      = require("axios");
+const fs         = require("fs");
+const pool       = require("../db");
 const sunoService = require("../services/suno.service");
+const cloudinary = require("../config/cloudinary");
 
 /* ─────────────────────────────────────────────
    Status sets
@@ -28,6 +30,23 @@ const LYRICS_TERMINAL_STATUSES = [
   "SENSITIVE_WORD_ERROR",
   "CALLBACK_EXCEPTION",
 ];
+
+/* ─────────────────────────────────────────────
+   URL validation
+───────────────────────────────────────────── */
+
+function isPublicUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (!["http:", "https:"].includes(parsed.protocol)) return false;
+  const host = parsed.hostname;
+  if (host === "localhost") return false;
+  if (/^127\./.test(host))                     return false;
+  if (/^10\./.test(host))                      return false;
+  if (/^192\.168\./.test(host))                return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  return true;
+}
 
 /* ─────────────────────────────────────────────
    DB migrations — idempotent, safe to re-run
@@ -579,8 +598,8 @@ const uploadCoverHandler = async (req, res) => {
 
   if (!userId)    return res.status(400).json({ error: "userId is required" });
   if (!uploadUrl) return res.status(400).json({ error: "uploadUrl is required" });
-  if (!uploadUrl.startsWith("http"))
-    return res.status(400).json({ error: "uploadUrl must be a valid HTTP/HTTPS URL" });
+  if (!isPublicUrl(uploadUrl))
+    return res.status(400).json({ error: "Audio file URL must be publicly accessible (not localhost or private network)" });
 
   try {
     const activeId = await checkDuplicateGuard(userId);
@@ -644,8 +663,8 @@ const uploadExtendHandler = async (req, res) => {
 
   if (!userId)    return res.status(400).json({ error: "userId is required" });
   if (!uploadUrl) return res.status(400).json({ error: "uploadUrl is required" });
-  if (!uploadUrl.startsWith("http"))
-    return res.status(400).json({ error: "uploadUrl must be a valid HTTP/HTTPS URL" });
+  if (!isPublicUrl(uploadUrl))
+    return res.status(400).json({ error: "Audio file URL must be publicly accessible (not localhost or private network)" });
 
   try {
     const activeId = await checkDuplicateGuard(userId);
@@ -708,8 +727,8 @@ const addVocalsHandler = async (req, res) => {
 
   if (!userId)    return res.status(400).json({ error: "userId is required" });
   if (!uploadUrl) return res.status(400).json({ error: "uploadUrl is required" });
-  if (!uploadUrl.startsWith("http"))
-    return res.status(400).json({ error: "uploadUrl must be a valid HTTP/HTTPS URL" });
+  if (!isPublicUrl(uploadUrl))
+    return res.status(400).json({ error: "Audio file URL must be publicly accessible (not localhost or private network)" });
   if (!prompt) return res.status(400).json({ error: "prompt (lyrics) is required" });
   if (!title)  return res.status(400).json({ error: "title is required" });
   if (!style)  return res.status(400).json({ error: "style is required" });
@@ -768,8 +787,8 @@ const addInstrumentalHandler = async (req, res) => {
 
   if (!userId)    return res.status(400).json({ error: "userId is required" });
   if (!uploadUrl) return res.status(400).json({ error: "uploadUrl is required" });
-  if (!uploadUrl.startsWith("http"))
-    return res.status(400).json({ error: "uploadUrl must be a valid HTTP/HTTPS URL" });
+  if (!isPublicUrl(uploadUrl))
+    return res.status(400).json({ error: "Audio file URL must be publicly accessible (not localhost or private network)" });
   if (!title) return res.status(400).json({ error: "title is required" });
   if (!tags)  return res.status(400).json({ error: "tags (style) is required" });
 
@@ -878,7 +897,12 @@ const getLyricsStatusHandler = async (req, res) => {
     // Suno record-info response shape (per docs):
     //   data.status   = PENDING | SUCCESS | GENERATE_LYRICS_FAILED | …  (our internal values)
     //   data.response = { taskId, data: [{text, title, status, errorMessage}] }
-    const sunoStatus  = sunoResult.data.status;
+    //
+    // Normalize known API variants so the DB always stores canonical status strings.
+    const rawStatus  = sunoResult.data.status;
+    const sunoStatus = rawStatus === "GENERATE_LYRIC_FAILED"
+      ? "GENERATE_LYRICS_FAILED"
+      : rawStatus;
     const responseObj = sunoResult.data.response;
 
     // Extract LyricsResult[] from data.response.data (primary documented path)
@@ -906,10 +930,15 @@ const getLyricsStatusHandler = async (req, res) => {
       return res.json(formatted);
     }
 
+    const sunoErrorMsg = sunoResult.data.errorMessage || sunoResult.data.msg || null;
+    const dbErrorMsg   = LYRICS_TERMINAL_STATUSES.includes(sunoStatus) && sunoStatus !== "SUCCESS"
+      ? (sunoErrorMsg || null)
+      : null;
+
     const { rows: updated } = await pool.query(
-      `UPDATE ai_lyrics SET status=$1, lyrics_data=$2, updated_at=NOW()
-       WHERE task_id=$3 RETURNING *`,
-      [sunoStatus, lyricsArray ? JSON.stringify(lyricsArray) : lyrics.lyrics_data, taskId]
+      `UPDATE ai_lyrics SET status=$1, lyrics_data=$2, error_message=$3, updated_at=NOW()
+       WHERE task_id=$4 RETURNING *`,
+      [sunoStatus, lyricsArray ? JSON.stringify(lyricsArray) : lyrics.lyrics_data, dbErrorMsg, taskId]
     );
 
     const formatted = formatLyricsRow(updated[0]);
@@ -964,6 +993,27 @@ const getTimestampedLyricsHandler = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────
+   Audio file upload
+───────────────────────────────────────────── */
+
+const uploadAudio = async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No audio file provided" });
+  const localPath = req.file.path;
+  try {
+    const result = await cloudinary.uploader.upload(localPath, {
+      resource_type: "video",
+      folder:        "harmony-ai-uploads",
+    });
+    fs.unlink(localPath, () => {});
+    return res.json({ url: result.secure_url, filename: req.file.originalname, size: req.file.size });
+  } catch (err) {
+    fs.unlink(localPath, () => {});
+    console.error("Cloudinary upload error:", err.message);
+    return res.status(500).json({ error: "Failed to upload audio to cloud storage" });
+  }
+};
+
+/* ─────────────────────────────────────────────
    Exports
 ───────────────────────────────────────────── */
 
@@ -983,4 +1033,5 @@ module.exports = {
   getLyricsStatusHandler,
   getLyricsHistory,
   getTimestampedLyricsHandler,
+  uploadAudio,
 };
