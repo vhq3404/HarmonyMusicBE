@@ -999,6 +999,106 @@ const getTimestampedLyricsHandler = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────
+   History deletion
+───────────────────────────────────────────── */
+
+const deleteGeneration = async (req, res) => {
+  const userId = String(req.user.id);
+  const { taskId } = req.params;
+  try {
+    const { rows } = await pool.query(
+      "SELECT user_id FROM ai_generations WHERE task_id = $1",
+      [taskId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    if (String(rows[0].user_id) !== userId) return res.status(403).json({ error: "Forbidden" });
+    await pool.query("DELETE FROM ai_generations WHERE task_id = $1", [taskId]);
+    statusCache.delete(taskId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("deleteGeneration error:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+const deleteGenerations = async (req, res) => {
+  const userId = String(req.user.id);
+  const { taskIds, all } = req.body;
+  try {
+    if (all) {
+      const { rows } = await pool.query(
+        "SELECT task_id FROM ai_generations WHERE user_id = $1",
+        [userId]
+      );
+      await pool.query("DELETE FROM ai_generations WHERE user_id = $1", [userId]);
+      rows.forEach((r) => statusCache.delete(r.task_id));
+      return res.json({ success: true, deleted: rows.length });
+    }
+    if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ error: "Provide taskIds array or all:true" });
+    }
+    const placeholders = taskIds.map((_, i) => `$${i + 2}`).join(", ");
+    const { rowCount } = await pool.query(
+      `DELETE FROM ai_generations WHERE user_id = $1 AND task_id IN (${placeholders})`,
+      [userId, ...taskIds]
+    );
+    taskIds.forEach((id) => statusCache.delete(id));
+    return res.json({ success: true, deleted: rowCount });
+  } catch (err) {
+    console.error("deleteGenerations error:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+const deleteLyrics = async (req, res) => {
+  const userId = String(req.user.id);
+  const { taskId } = req.params;
+  try {
+    const { rows } = await pool.query(
+      "SELECT user_id FROM ai_lyrics WHERE task_id = $1",
+      [taskId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    if (String(rows[0].user_id) !== userId) return res.status(403).json({ error: "Forbidden" });
+    await pool.query("DELETE FROM ai_lyrics WHERE task_id = $1", [taskId]);
+    lyricsStatusCache.delete(taskId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("deleteLyrics error:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+const deleteLyricsMany = async (req, res) => {
+  const userId = String(req.user.id);
+  const { taskIds, all } = req.body;
+  try {
+    if (all) {
+      const { rows } = await pool.query(
+        "SELECT task_id FROM ai_lyrics WHERE user_id = $1",
+        [userId]
+      );
+      await pool.query("DELETE FROM ai_lyrics WHERE user_id = $1", [userId]);
+      rows.forEach((r) => lyricsStatusCache.delete(r.task_id));
+      return res.json({ success: true, deleted: rows.length });
+    }
+    if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ error: "Provide taskIds array or all:true" });
+    }
+    const placeholders = taskIds.map((_, i) => `$${i + 2}`).join(", ");
+    const { rowCount } = await pool.query(
+      `DELETE FROM ai_lyrics WHERE user_id = $1 AND task_id IN (${placeholders})`,
+      [userId, ...taskIds]
+    );
+    taskIds.forEach((id) => lyricsStatusCache.delete(id));
+    return res.json({ success: true, deleted: rowCount });
+  } catch (err) {
+    console.error("deleteLyricsMany error:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/* ─────────────────────────────────────────────
    Audio file upload
 ───────────────────────────────────────────── */
 
@@ -1040,4 +1140,8 @@ module.exports = {
   getLyricsHistory,
   getTimestampedLyricsHandler,
   uploadAudio,
+  deleteGeneration,
+  deleteGenerations,
+  deleteLyrics,
+  deleteLyricsMany,
 };

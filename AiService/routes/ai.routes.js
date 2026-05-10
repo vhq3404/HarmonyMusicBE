@@ -25,6 +25,8 @@ router.post("/add-instrumental",        verifyToken, ctrl.addInstrumentalHandler
 // Lyrics
 router.post("/lyrics",                  verifyToken, ctrl.generateLyricsHandler);
 router.get("/lyrics/history",           verifyToken, ctrl.getLyricsHistory);
+router.delete("/lyrics/history",        verifyToken, ctrl.deleteLyricsMany);
+router.delete("/lyrics/:taskId",        verifyToken, ctrl.deleteLyrics);
 router.get("/lyrics/:taskId/status",    verifyToken, ctrl.getLyricsStatusHandler);
 
 // Timestamped lyrics proxy
@@ -32,6 +34,8 @@ router.post("/timestamped-lyrics",      verifyToken, ctrl.getTimestampedLyricsHa
 
 // User history & download
 router.get("/history",                  verifyToken, ctrl.getHistory);
+router.delete("/history/:taskId",       verifyToken, ctrl.deleteGeneration);
+router.delete("/history",               verifyToken, ctrl.deleteGenerations);
 router.get("/download/:taskId/:songId", verifyToken, ctrl.downloadSong);
 
 // Credits
