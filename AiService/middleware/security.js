@@ -36,6 +36,15 @@ const generateLimiter = rateLimit({
   message: { error: "AI generation rate limit exceeded, please try again later" },
 });
 
+// Status polling — generous limit so the FE poller never gets blocked
+const statusLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many status requests, please try again later" },
+});
+
 function sanitizeBody(req, _res, next) {
   if (req.body && typeof req.body === "object") {
     const strip = (v) =>
@@ -54,4 +63,4 @@ function sanitizeBody(req, _res, next) {
   next();
 }
 
-module.exports = { corsOptions, generalLimiter, generateLimiter, sanitizeBody, helmet, hpp };
+module.exports = { corsOptions, generalLimiter, generateLimiter, statusLimiter, sanitizeBody, helmet, hpp };

@@ -10,6 +10,7 @@ const {
   corsOptions,
   generalLimiter,
   generateLimiter,
+  statusLimiter,
   sanitizeBody,
   helmet,
   hpp,
@@ -31,13 +32,18 @@ app.use(hpp());
 app.use(sanitizeBody);
 
 /* ── Rate limiting ──────────────────────────────── */
-app.use("/api/ai/generate",        generateLimiter);
-app.use("/api/ai/extend",          generateLimiter);
-app.use("/api/ai/upload-cover",    generateLimiter);
-app.use("/api/ai/upload-extend",   generateLimiter);
-app.use("/api/ai/add-vocals",      generateLimiter);
-app.use("/api/ai/add-instrumental",generateLimiter);
-app.use("/api/ai/lyrics",          generateLimiter);
+// Generous limits for status polling (must be registered before generalLimiter)
+app.get("/api/ai/generate/:taskId/status", statusLimiter);
+app.get("/api/ai/lyrics/:taskId/status",   statusLimiter);
+
+// Expensive creation endpoints — POST only so polling GETs are not affected
+app.post("/api/ai/generate",         generateLimiter);
+app.post("/api/ai/extend",           generateLimiter);
+app.post("/api/ai/upload-cover",     generateLimiter);
+app.post("/api/ai/upload-extend",    generateLimiter);
+app.post("/api/ai/add-vocals",       generateLimiter);
+app.post("/api/ai/add-instrumental", generateLimiter);
+app.post("/api/ai/lyrics",           generateLimiter);
 app.use(generalLimiter);
 
 /* ── Static uploads dir ─────────────────────────── */
