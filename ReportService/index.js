@@ -12,33 +12,35 @@ const {
   hpp,
 } = require("./middleware/security");
 
+const { notFoundHandler, errorChain } = require("../shared/middleware/errorHandler");
+
 const reportRoutes = require("./routes/report.routes");
 const adminRoutes  = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────── */
+/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────── */
+/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────── */
+/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Rate limiting ──────────────────────────────── */
+/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use("/api/reports", reportLimiter);
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────── */
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api",               reportRoutes);
 app.use("/api/admin/reports", adminRoutes);
 
-/* ── Health check ───────────────────────────────── */
+/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -48,15 +50,13 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── Global error handler ───────────────────────── */
-app.use((err, _req, res, _next) => {
-  if (err.message?.startsWith("CORS"))
-    return res.status(403).json({ error: err.message });
-  console.error("Unhandled error:", err.message);
-  res.status(500).json({ error: "Internal server error" });
-});
+/* ── 404 handler ────────────────────────────────────────────────────────── */
+app.use(notFoundHandler);
 
-/* ── DB bootstrap ───────────────────────────────── */
+/* ── Error classification chain ─────────────────────────────────────────── */
+app.use(...errorChain);
+
+/* ── DB bootstrap ───────────────────────────────────────────────────────── */
 const initDb = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reports (
@@ -82,7 +82,7 @@ initDb()
   .then(() => {
     const server = app.listen(PORT, () => {
       console.log(`ReportService running on port ${PORT}`);
-      console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open - set ALLOWED_ORIGINS in .env)"}`);
+      console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
     });
 
     const shutdown = (signal) => {
@@ -93,13 +93,13 @@ initDb()
           process.exit(0);
         });
       });
-      setTimeout(() => { console.error("[ReportService] Forced exit after timeout"); process.exit(1); }, 10_000);
+      setTimeout(() => { process.exit(1); }, 10_000);
     };
 
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("SIGINT",  () => shutdown("SIGINT"));
-    process.on("uncaughtException",  (err) => { console.error("[ReportService] Uncaught exception:", err); shutdown("uncaughtException"); });
-    process.on("unhandledRejection", (err) => { console.error("[ReportService] Unhandled rejection:", err); });
+    process.on("SIGTERM",            () => shutdown("SIGTERM"));
+    process.on("SIGINT",             () => shutdown("SIGINT"));
+    process.on("uncaughtException",  (err) => { console.error("[ReportService] Uncaught:", err); shutdown("uncaughtException"); });
+    process.on("unhandledRejection", (err) => { console.error("[ReportService] Rejection:", err); });
   })
   .catch((err) => {
     console.error("[ReportService] Failed to initialise database:", err);

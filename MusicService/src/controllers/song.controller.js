@@ -1,7 +1,8 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../config/db");
-const cloudinary = require("../config/cloudinary");
-const fs = require("fs");
+// Adapter: all Cloudinary upload/delete operations go through the shared adapter,
+// which owns resource_type mapping, folder paths, public_id extraction, and temp-file cleanup.
+const cloudinaryAdapter = require("../../../shared/services/cloudinaryAdapter");
 const { getUserById } = require("../utils/authClient");
 const { toSongResponse } = require("../utils/transform");
 const removeVietnameseTones = require("../utils/removeVietnameseTones");
@@ -50,21 +51,19 @@ exports.createSong = async (req, res) => {
     const metadata  = await parseFile(audioFile.path);
     const duration  = Math.floor(metadata.format.duration);
 
+    // Adapter handles resource_type + temp-file cleanup internally
     const [audioUpload, imageUpload] = await Promise.all([
-      cloudinary.uploader.upload(audioFile.path, { resource_type: "video" }),
-      cloudinary.uploader.upload(imageFile.path),
+      cloudinaryAdapter.uploadAudio(audioFile.path),
+      cloudinaryAdapter.uploadImage(imageFile.path, "thumbnails"),
     ]);
-
-    fs.unlink(audioFile.path, () => {});
-    fs.unlink(imageFile.path, () => {});
 
     const song = await prisma.song.create({
       data: {
         userId,
         title,
         duration,
-        audioUrl:     audioUpload.secure_url,
-        thumbnailUrl: imageUpload.secure_url,
+        audioUrl:     audioUpload.url,
+        thumbnailUrl: imageUpload.url,
         artists:      artists ? artists.split(",").map((a) => a.trim()) : [],
         lyrics:       lyrics || "",
         publicDate:   new Date(publicDate),
@@ -262,25 +261,16 @@ exports.updateSong = async (req, res) => {
       const metadata         = await parseFile(audioFile.path);
       updateData.duration    = Math.floor(metadata.format.duration);
 
-      if (existing.audioUrl) {
-        const publicId = existing.audioUrl.split("/").pop().split(".")[0];
-        await cloudinary.uploader.destroy(publicId, { resource_type: "video" }).catch(() => {});
-      }
-
-      const audioUpload   = await cloudinary.uploader.upload(audioFile.path, { resource_type: "video" });
-      updateData.audioUrl = audioUpload.secure_url;
-      fs.unlink(audioFile.path, () => {});
+      await cloudinaryAdapter.deleteAudio(existing.audioUrl);
+      const audioUpload   = await cloudinaryAdapter.uploadAudio(audioFile.path);
+      updateData.audioUrl = audioUpload.url;
     }
 
     if (req.files?.thumbnail?.[0]) {
       const imageFile = req.files.thumbnail[0];
-      if (existing.thumbnailUrl) {
-        const publicId = existing.thumbnailUrl.split("/").pop().split(".")[0];
-        await cloudinary.uploader.destroy(publicId).catch(() => {});
-      }
-      const imageUpload        = await cloudinary.uploader.upload(imageFile.path);
-      updateData.thumbnailUrl  = imageUpload.secure_url;
-      fs.unlink(imageFile.path, () => {});
+      await cloudinaryAdapter.deleteImage(existing.thumbnailUrl);
+      const imageUpload        = await cloudinaryAdapter.uploadImage(imageFile.path, "thumbnails");
+      updateData.thumbnailUrl  = imageUpload.url;
     }
 
     const song = await prisma.song.update({ where: { id }, data: updateData });
@@ -304,9 +294,10 @@ exports.deleteSong = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
+    // Adapter: folder-aware delete (correctly removes assets even when folder-stored)
     await Promise.all([
-      song.audioUrl     && cloudinary.uploader.destroy(song.audioUrl.split("/").pop().split(".")[0],     { resource_type: "video" }).catch(() => {}),
-      song.thumbnailUrl && cloudinary.uploader.destroy(song.thumbnailUrl.split("/").pop().split(".")[0]).catch(() => {}),
+      cloudinaryAdapter.deleteAudio(song.audioUrl),
+      cloudinaryAdapter.deleteImage(song.thumbnailUrl),
     ]);
 
     await prisma.song.delete({ where: { id } });

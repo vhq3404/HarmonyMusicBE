@@ -1,56 +1,44 @@
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const hpp = require("hpp");
+/**
+ * ReportService — Security Middleware Configuration
+ *
+ * Delegates to shared/middleware/security for shared concerns.
+ * Only ReportService-specific rate limits are defined here.
+ *
+ * Pattern — Chain of Responsibility:
+ *   Handler links for the ReportService security chain:
+ *     helmet → cors → body-parser → hpp → sanitizeBody
+ *     → reportLimiter (on /api/reports routes)
+ *     → generalLimiter
+ *     → routes
+ */
 
-const getAllowedOrigins = () => {
-  const raw = process.env.ALLOWED_ORIGINS || "";
-  return raw.split(",").map((o) => o.trim()).filter(Boolean);
-};
+"use strict";
 
-const corsOptions = {
-  origin: (origin, callback) => {
-    const allowed = getAllowedOrigins();
-    if (!origin) return callback(null, true);
-    if (allowed.length === 0 || allowed.includes("*") || allowed.includes(origin))
-      return callback(null, true);
-    callback(new Error(`CORS: origin '${origin}' not allowed`));
-  },
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
+const {
+  corsOptions,
+  sanitizeBody,
+  createRateLimiter,
+  helmet,
+  hpp,
+} = require("../../shared/middleware/security");
 
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
-});
-
-const reportLimiter = rateLimit({
+// Tight hourly limit on report submission to prevent spam reports
+const reportLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Report rate limit exceeded" },
+  max:      20,
+  message:  "Report rate limit exceeded",
 });
 
-function sanitizeBody(req, _res, next) {
-  if (req.body && typeof req.body === "object") {
-    const strip = (v) =>
-      typeof v === "string"
-        ? v.replace(/<[^>]*>/g, "").replace(/javascript:/gi, "")
-        : v;
-    const clean = (obj) => {
-      for (const key of Object.keys(obj)) {
-        if (typeof obj[key] === "string") obj[key] = strip(obj[key]);
-        else if (typeof obj[key] === "object" && obj[key] !== null)
-          clean(obj[key]);
-      }
-    };
-    clean(req.body);
-  }
-  next();
-}
+const generalLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max:      100,
+});
 
-module.exports = { corsOptions, generalLimiter, reportLimiter, sanitizeBody, helmet, hpp };
+module.exports = {
+  corsOptions,
+  sanitizeBody,
+  reportLimiter,
+  generalLimiter,
+  helmet,
+  hpp,
+};

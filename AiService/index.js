@@ -8,31 +8,34 @@ const aiRoutes = require("./routes/ai.routes");
 
 const {
   corsOptions,
-  generalLimiter,
-  generateLimiter,
-  statusLimiter,
   sanitizeBody,
+  statusLimiter,
+  generateLimiter,
+  generalLimiter,
   helmet,
   hpp,
 } = require("./middleware/security");
 
+// Chain of Responsibility — error classification chain + 404 terminator
+const { notFoundHandler, errorChain } = require("../shared/middleware/errorHandler");
+
 const app = express();
 
-/* ── Security headers ───────────────────────────── */
+/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────── */
+/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────── */
+/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Rate limiting ──────────────────────────────── */
-// Generous limits for status polling (must be registered before generalLimiter)
+/* ── Rate limiting ──────────────────────────────────────────────────────── */
+// statusLimiter applied first so polling routes get the generous limit
 app.get("/api/ai/generate/:taskId/status", statusLimiter);
 app.get("/api/ai/lyrics/:taskId/status",   statusLimiter);
 
@@ -46,15 +49,15 @@ app.post("/api/ai/add-instrumental", generateLimiter);
 app.post("/api/ai/lyrics",           generateLimiter);
 app.use(generalLimiter);
 
-/* ── Static uploads dir ─────────────────────────── */
+/* ── Static uploads dir ─────────────────────────────────────────────────── */
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
 
-/* ── Routes ─────────────────────────────────────── */
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api/ai", aiRoutes);
 
-/* ── Health check ───────────────────────────────── */
+/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -63,17 +66,16 @@ app.get("/health", async (_req, res) => {
     res.status(503).json({ status: "error", service: "AiService", db: err.message });
   }
 });
-app.get("/",       (_req, res) => res.send("AiService running"));
+app.get("/", (_req, res) => res.send("AiService running"));
 
-/* ── Global error handler ───────────────────────── */
-app.use((err, _req, res, _next) => {
-  if (err.message?.startsWith("CORS"))
-    return res.status(403).json({ error: err.message });
-  console.error("Unhandled error:", err.message);
-  res.status(500).json({ error: "Internal server error" });
-});
+/* ── 404 handler (must come after all routes) ───────────────────────────── */
+app.use(notFoundHandler);
 
-/* ── DB bootstrap ───────────────────────────────── */
+/* ── Error classification chain ────────────────────────────────────────── */
+// Order: Prisma → Multer → JWT → CORS → Generic fallback
+app.use(...errorChain);
+
+/* ── DB bootstrap ───────────────────────────────────────────────────────── */
 const initDb = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ai_generations (
@@ -105,7 +107,7 @@ initDb()
   .then(() => {
     const server = app.listen(PORT, () => {
       console.log(`AiService running on port ${PORT}`);
-      console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open - set ALLOWED_ORIGINS in .env)"}`);
+      console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
     });
 
     const shutdown = (signal) => {
@@ -116,11 +118,11 @@ initDb()
           process.exit(0);
         });
       });
-      setTimeout(() => { console.error("[AiService] Forced exit after timeout"); process.exit(1); }, 10_000);
+      setTimeout(() => { process.exit(1); }, 10_000);
     };
 
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("SIGINT",  () => shutdown("SIGINT"));
+    process.on("SIGTERM",            () => shutdown("SIGTERM"));
+    process.on("SIGINT",             () => shutdown("SIGINT"));
     process.on("uncaughtException",  (err) => { console.error("[AiService] Uncaught exception:", err); shutdown("uncaughtException"); });
     process.on("unhandledRejection", (err) => { console.error("[AiService] Unhandled rejection:", err); });
   })

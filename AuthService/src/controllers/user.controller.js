@@ -1,7 +1,7 @@
 const pool = require("../db");
-const cloudinary = require("../config/cloudinary");
+// Adapter: avatar uploads go through the shared Cloudinary adapter
+const cloudinaryAdapter = require("../../../shared/services/cloudinaryAdapter");
 const bcrypt = require("bcrypt");
-const fs = require("fs");
 
 /* ===================== GET USER BY ID ===================== */
 exports.getUserById = async (req, res) => {
@@ -64,16 +64,10 @@ exports.updateUser = async (req, res) => {
 
     let avatarUrl;
 
-    /* ===== UPLOAD AVATAR ===== */
+    /* ===== UPLOAD AVATAR (Adapter handles folder + temp-file cleanup) ===== */
     if (req.file) {
-      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-        folder: "avatars",
-        resource_type: "image",
-      });
-
-      avatarUrl = uploadResult.secure_url;
-
-      fs.unlinkSync(req.file.path); // xoá file local
+      const uploadResult = await cloudinaryAdapter.uploadAvatar(req.file.path);
+      avatarUrl = uploadResult.url;
     }
 
     const result = await pool.query(

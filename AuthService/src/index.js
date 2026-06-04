@@ -12,6 +12,8 @@ const {
   hpp,
 } = require("./middleware/security");
 
+const { notFoundHandler, errorChain } = require("../../shared/middleware/errorHandler");
+
 const authRoutes   = require("./routes/auth.route");
 const userRoutes   = require("./routes/user.route");
 const followRoutes = require("./routes/follow.routes");
@@ -19,30 +21,30 @@ const adminRoutes  = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────── */
+/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────── */
+/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────── */
+/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Rate limiting ──────────────────────────────── */
+/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use("/api/auth", authLimiter);
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────── */
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api/auth",  authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api",       followRoutes);
 app.use("/api/admin", adminRoutes);
 
-/* ── Health check ───────────────────────────────── */
+/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -52,22 +54,19 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── Global error handler ───────────────────────── */
-app.use((err, _req, res, _next) => {
-  if (err.message?.startsWith("CORS")) {
-    return res.status(403).json({ error: err.message });
-  }
-  console.error("Unhandled error:", err.message);
-  res.status(500).json({ error: "Internal server error" });
-});
+/* ── 404 handler ────────────────────────────────────────────────────────── */
+app.use(notFoundHandler);
+
+/* ── Error classification chain ─────────────────────────────────────────── */
+app.use(...errorChain);
 
 const PORT = process.env.PORT || 4001;
 const server = app.listen(PORT, () => {
   console.log(`AuthService running on port ${PORT}`);
-  console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open - set ALLOWED_ORIGINS in .env)"}`);
+  console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
 });
 
-/* ── Graceful shutdown ──────────────────────────── */
+/* ── Graceful shutdown ──────────────────────────────────────────────────── */
 const shutdown = (signal) => {
   console.log(`[AuthService] ${signal} received — shutting down gracefully`);
   server.close(() => {
@@ -76,10 +75,10 @@ const shutdown = (signal) => {
       process.exit(0);
     });
   });
-  setTimeout(() => { console.error("[AuthService] Forced exit after timeout"); process.exit(1); }, 10_000);
+  setTimeout(() => { process.exit(1); }, 10_000);
 };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT",  () => shutdown("SIGINT"));
+process.on("SIGTERM",            () => shutdown("SIGTERM"));
+process.on("SIGINT",             () => shutdown("SIGINT"));
 process.on("uncaughtException",  (err) => { console.error("[AuthService] Uncaught exception:", err); shutdown("uncaughtException"); });
 process.on("unhandledRejection", (err) => { console.error("[AuthService] Unhandled rejection:", err); });

@@ -12,6 +12,8 @@ const {
   hpp,
 } = require("./middleware/security");
 
+const { notFoundHandler, errorChain } = require("../../shared/middleware/errorHandler");
+
 const songRoutes     = require("./routes/song.route");
 const playRoutes     = require("./routes/play.route");
 const playListRoutes = require("./routes/playlist.route");
@@ -20,21 +22,20 @@ const adminRoutes    = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────── */
+/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────── */
+/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────── */
+/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Request timeout ────────────────────────────── */
-/* 30s cap releases Prisma connections held by hung/stalled requests */
+/* ── Request timeout ────────────────────────────────────────────────────── */
 app.use((_req, res, next) => {
   res.setTimeout(30_000, () => {
     if (!res.headersSent) res.status(503).json({ error: "Request timeout" });
@@ -42,17 +43,17 @@ app.use((_req, res, next) => {
   next();
 });
 
-/* ── Rate limiting ──────────────────────────────── */
+/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────── */
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api/songs",     songRoutes);
 app.use("/api/plays",     playRoutes);
 app.use("/api/playlists", playListRoutes);
 app.use("/api",           commentRoutes);
 app.use("/api/admin",     adminRoutes);
 
-/* ── Health check ───────────────────────────────── */
+/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -62,21 +63,19 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── Global error handler ───────────────────────── */
-app.use((err, _req, res, _next) => {
-  if (err.message?.startsWith("CORS"))
-    return res.status(403).json({ error: err.message });
-  console.error("Unhandled error:", err.message);
-  res.status(500).json({ error: "Internal server error" });
-});
+/* ── 404 handler ────────────────────────────────────────────────────────── */
+app.use(notFoundHandler);
+
+/* ── Error classification chain ─────────────────────────────────────────── */
+app.use(...errorChain);
 
 const PORT = process.env.PORT || 4002;
 const server = app.listen(PORT, () => {
   console.log(`MusicService running on port ${PORT}`);
-  console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open - set ALLOWED_ORIGINS in .env)"}`);
+  console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
 });
 
-/* ── Graceful shutdown ──────────────────────────── */
+/* ── Graceful shutdown ──────────────────────────────────────────────────── */
 const shutdown = async (signal) => {
   console.log(`[MusicService] ${signal} received — shutting down gracefully`);
   server.close(async () => {
@@ -84,10 +83,10 @@ const shutdown = async (signal) => {
     console.log("[MusicService] Prisma disconnected. Exiting.");
     process.exit(0);
   });
-  setTimeout(() => { console.error("[MusicService] Forced exit after timeout"); process.exit(1); }, 10_000);
+  setTimeout(() => { process.exit(1); }, 10_000);
 };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT",  () => shutdown("SIGINT"));
+process.on("SIGTERM",            () => shutdown("SIGTERM"));
+process.on("SIGINT",             () => shutdown("SIGINT"));
 process.on("uncaughtException",  (err) => { console.error("[MusicService] Uncaught exception:", err); shutdown("uncaughtException"); });
 process.on("unhandledRejection", (err) => { console.error("[MusicService] Unhandled rejection:", err); });

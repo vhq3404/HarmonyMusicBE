@@ -1,8 +1,26 @@
+/**
+ * AI Controller
+ *
+ * Thin HTTP-to-service delegation layer for all AI music and lyrics operations.
+ *
+ * ── Proxy (Caching) ──────────────────────────────────────────────────────────
+ * cachedSunoService (CachedSunoService) replaces direct sunoService calls for
+ * status polling. Cache management is fully transparent — the controller no
+ * longer owns Map instances, getCached/setCache helpers, or eviction timers.
+ *
+ * ── Adapter ──────────────────────────────────────────────────────────────────
+ * normalizeSunoTrack is imported from suno.service.js where it belongs,
+ * instead of being defined locally in the controller.
+ */
+
 const axios      = require("axios");
-const fs         = require("fs");
 const pool       = require("../db");
-const sunoService = require("../services/suno.service");
-const cloudinary = require("../config/cloudinary");
+// Proxy: use CachedSunoService for all Suno API calls
+const cachedSunoService          = require("../services/cachedSuno.service");
+// Import normalizeSunoTrack from its proper home (the Adapter module)
+const { normalizeSunoTrack }     = require("../services/suno.service");
+// Adapter: audio uploads go through the shared Cloudinary adapter
+const cloudinaryAdapter = require("../../shared/services/cloudinaryAdapter");
 
 /* ─────────────────────────────────────────────
    Status sets
@@ -84,57 +102,18 @@ function isPublicUrl(url) {
 })();
 
 /* ─────────────────────────────────────────────
-   In-memory TTL caches
+   Cache management removed — now owned by CachedSunoService (Proxy).
+   statusCache, lyricsStatusCache, getCached(), setCache(), cacheEvictTimer
+   all live in services/cachedSuno.service.js.
 ───────────────────────────────────────────── */
-
-const statusCache       = new Map();
-const lyricsStatusCache = new Map();
-const STATUS_CACHE_TTL  = 4000;
-const CACHE_MAX_SIZE    = 500;
-
-function getCached(map, key) {
-  const entry = map.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) { map.delete(key); return null; }
-  return entry.data;
-}
-
-function setCache(map, key, data) {
-  if (map.size >= CACHE_MAX_SIZE) {
-    map.delete(map.keys().next().value);
-  }
-  map.set(key, { data, expiresAt: Date.now() + STATUS_CACHE_TTL });
-}
-
-/* Periodic eviction for status caches (unref so it doesn't block shutdown) */
-const cacheEvictTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of statusCache)       { if (now > v.expiresAt) statusCache.delete(k); }
-  for (const [k, v] of lyricsStatusCache) { if (now > v.expiresAt) lyricsStatusCache.delete(k); }
-}, 60_000);
-cacheEvictTimer.unref();
 
 /* ─────────────────────────────────────────────
    Normalize Suno track data to consistent camelCase.
    Status API returns camelCase; callback API returns snake_case.
 ───────────────────────────────────────────── */
 
-function normalizeSunoTrack(track) {
-  if (!track || typeof track !== "object") return null;
-  return {
-    id:             track.id             || "",
-    audioUrl:       track.audioUrl       || track.audio_url        || "",
-    streamAudioUrl: track.streamAudioUrl || track.stream_audio_url  || "",
-    imageUrl:       track.imageUrl       || track.image_url         || "",
-    imageLargeUrl:  track.imageLargeUrl  || track.image_large_url   || null,
-    prompt:         track.prompt         || "",
-    modelName:      track.modelName      || track.model_name        || null,
-    title:          track.title          || "",
-    tags:           track.tags           || null,
-    duration:       track.duration       || null,
-    createTime:     track.createTime     || null,
-  };
-}
+/* normalizeSunoTrack is now imported from suno.service.js (its correct home).
+   It is used below in formatRow and handleCallback. */
 
 /* ─────────────────────────────────────────────
    Row formatters
@@ -293,7 +272,7 @@ const generate = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.generateMusic(sunoParams);
+    const result = await cachedSunoService.generateMusic(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Generation failed" });
 
@@ -331,12 +310,10 @@ const getStatus = async (req, res) => {
     if (TERMINAL_STATUSES.includes(generation.status))
       return res.json(formatRow(generation));
 
-    const cached = getCached(statusCache, taskId);
-    if (cached) return res.json(cached);
-
+    // Proxy: cachedSunoService transparently caches Suno API results
     let sunoResult;
     try {
-      sunoResult = await sunoService.getGenerationStatus(taskId);
+      sunoResult = await cachedSunoService.getGenerationStatus(taskId);
     } catch (pollErr) {
       console.warn("Suno poll error:", pollErr.message);
       return res.json(formatRow(generation));
@@ -345,7 +322,7 @@ const getStatus = async (req, res) => {
     if (sunoResult.code !== 200) return res.json(formatRow(generation));
 
     const { status, response, errorMessage: sunoError } = sunoResult.data;
-    const rawTracks       = response?.sunoData || null;
+    const rawTracks        = response?.sunoData || null;
     const normalizedTracks = Array.isArray(rawTracks) && rawTracks.length
       ? rawTracks.map(normalizeSunoTrack).filter(Boolean)
       : null;
@@ -356,9 +333,7 @@ const getStatus = async (req, res) => {
     const statusUnchanged = status === generation.status;
     const dataUnchanged   = !normalizedTracks && !generation.suno_data;
     if (statusUnchanged && dataUnchanged) {
-      const formatted = formatRow(generation);
-      setCache(statusCache, taskId, formatted);
-      return res.json(formatted);
+      return res.json(formatRow(generation));
     }
 
     const { rows: updated } = await pool.query(
@@ -370,7 +345,10 @@ const getStatus = async (req, res) => {
     );
 
     const formatted = formatRow(updated[0]);
-    if (!TERMINAL_STATUSES.includes(status)) setCache(statusCache, taskId, formatted);
+    // On terminal status: invalidate the proxy cache so next read is fresh
+    if (TERMINAL_STATUSES.includes(status)) {
+      cachedSunoService.invalidateMusicStatus(taskId);
+    }
     return res.json(formatted);
   } catch (err) {
     console.error("getStatus error:", err);
@@ -428,13 +406,14 @@ const handleCallback = async (req, res) => {
         `UPDATE ai_lyrics SET status=$1, lyrics_data=$2, updated_at=NOW() WHERE task_id=$3`,
         [status, JSON.stringify(rawData), resolvedTaskId]
       );
-      lyricsStatusCache.delete(resolvedTaskId);
+      // Proxy: invalidate lyrics cache so next poll returns fresh data
+      cachedSunoService.invalidateLyricsStatus(resolvedTaskId);
       return;
     }
 
     // Music callback
     let status = "PENDING";
-    if (callbackType === "text")     status = "TEXT_SUCCESS";
+    if (callbackType === "text")          status = "TEXT_SUCCESS";
     else if (callbackType === "first")    status = "FIRST_SUCCESS";
     else if (callbackType === "complete") status = "SUCCESS";
     else if (callbackType === "error")    status = "GENERATE_AUDIO_FAILED";
@@ -447,7 +426,8 @@ const handleCallback = async (req, res) => {
       `UPDATE ai_generations SET status=$1, suno_data=$2, updated_at=NOW() WHERE task_id=$3`,
       [status, normalizedTracks ? JSON.stringify(normalizedTracks) : null, resolvedTaskId]
     );
-    statusCache.delete(resolvedTaskId);
+    // Proxy: invalidate music cache so next poll returns fresh data
+    cachedSunoService.invalidateMusicStatus(resolvedTaskId);
   } catch (err) {
     console.error("Callback processing error:", err);
   }
@@ -518,7 +498,7 @@ const downloadSong = async (req, res) => {
 
 const getCredits = async (req, res) => {
   try {
-    const result = await sunoService.getCredits();
+    const result = await cachedSunoService.getCredits();
     return res.json({ credits: result.data ?? 0 });
   } catch (err) {
     console.error("getCredits error:", err);
@@ -568,7 +548,7 @@ const extendMusicHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.extendMusic(sunoParams);
+    const result = await cachedSunoService.extendMusic(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Extend failed" });
 
@@ -634,7 +614,7 @@ const uploadCoverHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.uploadCoverAudio(sunoParams);
+    const result = await cachedSunoService.uploadCoverAudio(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Upload cover failed" });
 
@@ -698,7 +678,7 @@ const uploadExtendHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.uploadExtendAudio(sunoParams);
+    const result = await cachedSunoService.uploadExtendAudio(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Upload extend failed" });
 
@@ -759,7 +739,7 @@ const addVocalsHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.addVocals(sunoParams);
+    const result = await cachedSunoService.addVocals(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Add vocals failed" });
 
@@ -817,7 +797,7 @@ const addInstrumentalHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.addInstrumental(sunoParams);
+    const result = await cachedSunoService.addInstrumental(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Add instrumental failed" });
 
@@ -853,7 +833,7 @@ const generateLyricsHandler = async (req, res) => {
   };
 
   try {
-    const result = await sunoService.generateLyrics(sunoParams);
+    const result = await cachedSunoService.generateLyrics(sunoParams);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Lyrics generation failed" });
 
@@ -888,12 +868,10 @@ const getLyricsStatusHandler = async (req, res) => {
     if (LYRICS_TERMINAL_STATUSES.includes(lyrics.status))
       return res.json(formatLyricsRow(lyrics));
 
-    const cached = getCached(lyricsStatusCache, taskId);
-    if (cached) return res.json(cached);
-
+    // Proxy: cachedSunoService transparently caches lyrics status poll results
     let sunoResult;
     try {
-      sunoResult = await sunoService.getLyricsStatus(taskId);
+      sunoResult = await cachedSunoService.getLyricsStatus(taskId);
     } catch (pollErr) {
       console.warn("Suno lyrics poll error:", pollErr.message);
       return res.json(formatLyricsRow(lyrics));
@@ -931,10 +909,7 @@ const getLyricsStatusHandler = async (req, res) => {
     const statusUnchanged = sunoStatus === lyrics.status;
     const dataUnchanged   = !lyricsArray && !lyrics.lyrics_data;
     if (statusUnchanged && dataUnchanged) {
-      const formatted = formatLyricsRow(lyrics);
-      if (!LYRICS_TERMINAL_STATUSES.includes(sunoStatus))
-        setCache(lyricsStatusCache, taskId, formatted);
-      return res.json(formatted);
+      return res.json(formatLyricsRow(lyrics));
     }
 
     const sunoErrorMsg = sunoResult.data.errorMessage || sunoResult.data.msg || null;
@@ -949,8 +924,10 @@ const getLyricsStatusHandler = async (req, res) => {
     );
 
     const formatted = formatLyricsRow(updated[0]);
-    if (!LYRICS_TERMINAL_STATUSES.includes(sunoStatus))
-      setCache(lyricsStatusCache, taskId, formatted);
+    // Proxy: on terminal status, invalidate cache so next read is always fresh
+    if (LYRICS_TERMINAL_STATUSES.includes(sunoStatus)) {
+      cachedSunoService.invalidateLyricsStatus(taskId);
+    }
     return res.json(formatted);
   } catch (err) {
     console.error("getLyricsStatus error:", err);
@@ -988,7 +965,7 @@ const getTimestampedLyricsHandler = async (req, res) => {
     return res.status(400).json({ error: "taskId and audioId are required" });
 
   try {
-    const result = await sunoService.getTimestampedLyrics(taskId, audioId);
+    const result = await cachedSunoService.getTimestampedLyrics(taskId, audioId);
     if (result.code !== 200)
       return res.status(400).json({ error: result.msg || "Failed to fetch timestamped lyrics" });
     return res.json(result.data);
@@ -1104,16 +1081,11 @@ const deleteLyricsMany = async (req, res) => {
 
 const uploadAudio = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No audio file provided" });
-  const localPath = req.file.path;
   try {
-    const result = await cloudinary.uploader.upload(localPath, {
-      resource_type: "video",
-      folder:        "harmony-ai-uploads",
-    });
-    fs.unlink(localPath, () => {});
-    return res.json({ url: result.secure_url, filename: req.file.originalname, size: req.file.size });
+    // Adapter: handles resource_type, folder, and temp-file cleanup (both paths)
+    const { url } = await cloudinaryAdapter.uploadAudio(req.file.path, "harmony-ai-uploads");
+    return res.json({ url, filename: req.file.originalname, size: req.file.size });
   } catch (err) {
-    fs.unlink(localPath, () => {});
     console.error("Cloudinary upload error:", err.message);
     return res.status(500).json({ error: "Failed to upload audio to cloud storage" });
   }

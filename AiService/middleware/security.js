@@ -1,66 +1,58 @@
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const hpp = require("hpp");
+/**
+ * AiService — Security Middleware Configuration
+ *
+ * Delegates shared concerns (CORS, sanitization, helmet, hpp) to the
+ * shared/middleware/security module — the single source of truth.
+ *
+ * Only AiService-specific rate limits are defined here, using the shared
+ * createRateLimiter factory to avoid duplicating express-rate-limit config.
+ *
+ * Pattern — Chain of Responsibility:
+ *   This file supplies the handler links that AiService/index.js registers
+ *   in the following security chain order:
+ *     helmet → cors → body-parser → hpp → sanitizeBody
+ *     → [statusLimiter on polling routes]
+ *     → [generateLimiter on creation routes]
+ *     → generalLimiter
+ *     → routes
+ */
 
-const getAllowedOrigins = () => {
-  const raw = process.env.ALLOWED_ORIGINS || "";
-  return raw.split(",").map((o) => o.trim()).filter(Boolean);
-};
+"use strict";
 
-const corsOptions = {
-  origin: (origin, callback) => {
-    const allowed = getAllowedOrigins();
-    if (!origin) return callback(null, true);
-    if (allowed.length === 0 || allowed.includes("*") || allowed.includes(origin))
-      return callback(null, true);
-    callback(new Error(`CORS: origin '${origin}' not allowed`));
-  },
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
+const {
+  corsOptions,
+  sanitizeBody,
+  createRateLimiter,
+  helmet,
+  hpp,
+} = require("../../shared/middleware/security");
 
-const generalLimiter = rateLimit({
+// Generous limit for status-polling — FE polls every 3–20 s
+const statusLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
+  max:      500,
+  message:  "Too many status requests, please try again later",
 });
 
-// AI generation is expensive — tighter limit
-const generateLimiter = rateLimit({
+// Tight limit for expensive AI-generation operations
+const generateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "AI generation rate limit exceeded, please try again later" },
+  max:      20,
+  message:  "AI generation rate limit exceeded, please try again later",
 });
 
-// Status polling — generous limit so the FE poller never gets blocked
-const statusLimiter = rateLimit({
+// Fallback for all other routes
+const generalLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 500,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many status requests, please try again later" },
+  max:      100,
 });
 
-function sanitizeBody(req, _res, next) {
-  if (req.body && typeof req.body === "object") {
-    const strip = (v) =>
-      typeof v === "string"
-        ? v.replace(/<[^>]*>/g, "").replace(/javascript:/gi, "")
-        : v;
-    const clean = (obj) => {
-      for (const key of Object.keys(obj)) {
-        if (typeof obj[key] === "string") obj[key] = strip(obj[key]);
-        else if (typeof obj[key] === "object" && obj[key] !== null)
-          clean(obj[key]);
-      }
-    };
-    clean(req.body);
-  }
-  next();
-}
-
-module.exports = { corsOptions, generalLimiter, generateLimiter, statusLimiter, sanitizeBody, helmet, hpp };
+module.exports = {
+  corsOptions,
+  sanitizeBody,
+  statusLimiter,
+  generateLimiter,
+  generalLimiter,
+  helmet,
+  hpp,
+};
