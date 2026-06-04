@@ -1,17 +1,3 @@
-/**
- * AuthService — Security Middleware Configuration
- *
- * Delegates to shared/middleware/security for shared concerns.
- * Only AuthService-specific rate limits are defined here.
- *
- * Pattern — Chain of Responsibility:
- *   Handler links for the AuthService security chain:
- *     helmet → cors → body-parser → hpp → sanitizeBody
- *     → authLimiter (on /api/auth/* routes)
- *     → generalLimiter
- *     → routes
- */
-
 "use strict";
 
 const {
@@ -22,11 +8,9 @@ const {
   hpp,
 } = require("../../../shared/middleware/security");
 
-// Tight limit on auth endpoints (login, register) to prevent brute-force
 const authLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max:      20,
-  // Skip the refresh endpoint so token auto-refresh is never rate-limited
   skip: (req) => req.path === "/api/auth/refresh",
 });
 

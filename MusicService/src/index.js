@@ -22,20 +22,16 @@ const adminRoutes    = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Request timeout ────────────────────────────────────────────────────── */
 app.use((_req, res, next) => {
   res.setTimeout(30_000, () => {
     if (!res.headersSent) res.status(503).json({ error: "Request timeout" });
@@ -43,17 +39,14 @@ app.use((_req, res, next) => {
   next();
 });
 
-/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api/songs",     songRoutes);
 app.use("/api/plays",     playRoutes);
 app.use("/api/playlists", playListRoutes);
 app.use("/api",           commentRoutes);
 app.use("/api/admin",     adminRoutes);
 
-/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -63,10 +56,8 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── 404 handler ────────────────────────────────────────────────────────── */
 app.use(notFoundHandler);
 
-/* ── Error classification chain ─────────────────────────────────────────── */
 app.use(...errorChain);
 
 const PORT = process.env.PORT || 4002;
@@ -75,7 +66,6 @@ const server = app.listen(PORT, () => {
   console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
 });
 
-/* ── Graceful shutdown ──────────────────────────────────────────────────── */
 const shutdown = async (signal) => {
   console.log(`[MusicService] ${signal} received — shutting down gracefully`);
   server.close(async () => {

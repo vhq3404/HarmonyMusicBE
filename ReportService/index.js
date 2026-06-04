@@ -19,28 +19,22 @@ const adminRoutes  = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use("/api/reports", reportLimiter);
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api",               reportRoutes);
 app.use("/api/admin/reports", adminRoutes);
 
-/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -50,13 +44,10 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── 404 handler ────────────────────────────────────────────────────────── */
 app.use(notFoundHandler);
 
-/* ── Error classification chain ─────────────────────────────────────────── */
 app.use(...errorChain);
 
-/* ── DB bootstrap ───────────────────────────────────────────────────────── */
 const initDb = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reports (

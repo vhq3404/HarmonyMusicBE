@@ -21,30 +21,24 @@ const adminRoutes  = require("./routes/admin.routes");
 
 const app = express();
 
-/* ── Security headers ───────────────────────────────────────────────────── */
 app.use(helmet());
 app.set("trust proxy", 1);
 
-/* ── CORS ───────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 
-/* ── Body parsing & sanitization ───────────────────────────────────────── */
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(hpp());
 app.use(sanitizeBody);
 
-/* ── Rate limiting ──────────────────────────────────────────────────────── */
 app.use("/api/auth", authLimiter);
 app.use(generalLimiter);
 
-/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/api/auth",  authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api",       followRoutes);
 app.use("/api/admin", adminRoutes);
 
-/* ── Health check ───────────────────────────────────────────────────────── */
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -54,10 +48,8 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/* ── 404 handler ────────────────────────────────────────────────────────── */
 app.use(notFoundHandler);
 
-/* ── Error classification chain ─────────────────────────────────────────── */
 app.use(...errorChain);
 
 const PORT = process.env.PORT || 4001;
@@ -66,7 +58,6 @@ const server = app.listen(PORT, () => {
   console.log(`CORS origins: ${process.env.ALLOWED_ORIGINS || "(open)"}`);
 });
 
-/* ── Graceful shutdown ──────────────────────────────────────────────────── */
 const shutdown = (signal) => {
   console.log(`[AuthService] ${signal} received — shutting down gracefully`);
   server.close(() => {
